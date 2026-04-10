@@ -1,0 +1,3 @@
+textual>=0.58.0
+psutil>=5.9.0
+lark>=1.2.2
