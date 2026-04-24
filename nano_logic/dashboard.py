@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from datetime import datetime
 
 import psutil
@@ -42,6 +43,13 @@ class SystemDashboardApp(App[None]):
         padding: 1 2;
         margin-bottom: 1;
         background: #141a24;
+        width: 1fr;
+        height: 10;
+    }
+
+    .metric-panel {
+        width: 1fr;
+        height: 10;
     }
 
     #guide-panel {
@@ -50,6 +58,7 @@ class SystemDashboardApp(App[None]):
         border: round #8ac926;
         padding: 1 2;
         background: #152113;
+        height: 1fr;
     }
 
     #main-layout {
@@ -60,11 +69,15 @@ class SystemDashboardApp(App[None]):
 
     .metrics-row {
         layout: horizontal;
-        height: 8;
+        height: auto;
         margin-bottom: 1;
+        width: 1fr;
     }
 
-    .metric-panel {
+    .metrics-row-2col {
+        layout: horizontal;
+        height: auto;
+        margin-bottom: 1;
         width: 1fr;
     }
 
@@ -73,6 +86,10 @@ class SystemDashboardApp(App[None]):
     }
 
     #ram-panel {
+        margin-right: 1;
+    }
+
+    #gpu-panel {
         margin-right: 1;
     }
 
@@ -86,6 +103,7 @@ class SystemDashboardApp(App[None]):
 
     #command-panel {
         height: 1fr;
+        min-height: 8;
     }
 
     #command-input {
@@ -96,13 +114,25 @@ class SystemDashboardApp(App[None]):
     BINDINGS = [Binding("q", "quit", "Quit")]
 
     command_history: list[str]
+    cpu_history: deque
+    ram_history: deque
+    gpu_history: deque
 
     def __init__(self) -> None:
         super().__init__()
         self.command_history = [
             "Command Console",
-            "Ready. Try: cpu.util, cpu.load, mem.util, mem.stats, disk.free",
+            "Ready. Try:",
+            "CPU: cpu.util, cpu.load, cpu.cores, cpu.top",
+            "MEM: mem.util, mem.stats, mem.swap, mem.top",
+            "DISK: disk.free, disk.usage, disk.io, disk.top",
+            "PROC: proc.list, proc.kill <pid>",
+            "NET: net.interfaces, net.bandwidth, net.connections",
+            "SYS: system.uptime, system.info, system.processes",
         ]
+        self.cpu_history = deque(maxlen=30)
+        self.ram_history = deque(maxlen=30)
+        self.gpu_history = deque(maxlen=30)
 
     def compose(self) -> ComposeResult:
         """Build the app layout."""
@@ -110,14 +140,17 @@ class SystemDashboardApp(App[None]):
         with Horizontal(id="app-layout"):
             yield Static(render_guide(), id="guide-panel")
             with Vertical(id="main-layout"):
+                # First row of metrics
                 with Horizontal(classes="metrics-row"):
                     yield Static("CPU Usage\nLoading...", id="cpu-panel", classes="panel metric-panel")
                     yield Static("RAM Usage\nLoading...", id="ram-panel", classes="panel metric-panel")
                     yield Static("GPU Usage\nLoading...", id="gpu-panel", classes="panel metric-panel")
+                # Second row of metrics
                 with Horizontal(classes="metrics-row"):
                     yield Static("Disk Usage\nLoading...", id="disk-panel", classes="panel metric-panel")
                     yield Static("Network\nLoading...", id="net-panel", classes="panel metric-panel")
                     yield Static("System\nLoading...", id="system-panel", classes="panel metric-panel")
+                # Command panel
                 yield Static(self._render_command_panel(), id="command-panel", classes="panel")
                 yield Input(placeholder="Enter command: cpu.util, cpu.load, mem.util, mem.stats, disk.free", id="command-input")
         yield Footer()
@@ -148,6 +181,11 @@ class SystemDashboardApp(App[None]):
         process_count = len(psutil.pids())
         uptime_seconds = int(max(0.0, datetime.now().timestamp() - psutil.boot_time()))
 
+        # Append to history
+        self.cpu_history.append(cpu_percent)
+        self.ram_history.append(memory.percent)
+        self.gpu_history.append(gpu_percent if gpu_percent is not None else 0)
+
         cpu_widget = self.query_one("#cpu-panel", Static)
         ram_widget = self.query_one("#ram-panel", Static)
         gpu_widget = self.query_one("#gpu-panel", Static)
@@ -164,14 +202,16 @@ class SystemDashboardApp(App[None]):
 
     def _render_cpu_panel(self, cpu_percent: float, cpu_load: tuple[float, float, float] | None) -> str:
         bar = self._progress_bar(cpu_percent)
+        graph = self._render_mini_graph(list(self.cpu_history), 24, 4)
         if cpu_load is None:
             load_text = "Load: unavailable"
         else:
-            load_text = f"Load 1/5/15: {cpu_load[0]:.2f} {cpu_load[1]:.2f} {cpu_load[2]:.2f}"
+            load_text = f"Load 1/5/15: {cpu_load[0]:.1f} {cpu_load[1]:.1f} {cpu_load[2]:.1f}"
         return (
             "CPU Usage\n"
             f"Current: {cpu_percent:5.1f}%\n"
             f"{load_text}\n"
+            f"{graph}\n"
             f"{bar}"
         )
 
@@ -179,11 +219,11 @@ class SystemDashboardApp(App[None]):
         used_gb = used_bytes / (1024 ** 3)
         total_gb = total_bytes / (1024 ** 3)
         bar = self._progress_bar(ram_percent)
+        graph = self._render_mini_graph(list(self.ram_history), 24, 4)
         return (
             "RAM Usage\n"
-            f"Current: {ram_percent:5.1f}%\n"
-            f"Used: {used_gb:.2f} GB / {total_gb:.2f} GB\n"
-            f"Swap: {swap_percent:5.1f}%\n"
+            f"Current: {ram_percent:5.1f}% | Used: {used_gb:.1f}/{total_gb:.1f}GB | Swap: {swap_percent:.0f}%\n"
+            f"{graph}\n"
             f"{bar}"
         )
 
@@ -195,9 +235,11 @@ class SystemDashboardApp(App[None]):
                 "nvidia-smi unavailable"
             )
         bar = self._progress_bar(gpu_percent)
+        graph = self._render_mini_graph(list(self.gpu_history), 24, 4)
         return (
             "GPU Usage\n"
             f"Current: {gpu_percent:5.1f}%\n"
+            f"{graph}\n"
             f"{bar}"
         )
 
@@ -259,6 +301,28 @@ class SystemDashboardApp(App[None]):
     def _progress_bar(percent: float, width: int = 30) -> str:
         filled = int((percent / 100) * width)
         return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
+
+    @staticmethod
+    def _render_mini_graph(values: list[float], width: int = 24, height: int = 4) -> str:
+        """Render a simple ASCII sparkline graph."""
+        if not values:
+            return ""
+
+        # Use sparkline characters for a nice graph
+        sparkline_chars = "▁▂▃▄▅▆▇█"
+        
+        # Get last `width` values
+        values = values[-width:] if len(values) > width else values
+        pad_len = width - len(values)
+        values = [0] * pad_len + values
+        
+        # Normalize to 0-100 range for scaling
+        if values:
+            max_val = max(values) if max(values) > 0 else 100
+            normalized = [(v / max_val * (len(sparkline_chars) - 1)) for v in values]
+            graph = "".join(sparkline_chars[int(n)] for n in normalized)
+            return f"  {graph}"
+        return ""
 
 
 def main() -> None:
