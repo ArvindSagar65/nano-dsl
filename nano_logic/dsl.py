@@ -25,6 +25,7 @@ command: "cpu" "." "util" -> cpu_util
     | "disk" "." "usage" -> disk_usage
     | "disk" "." "io" -> disk_io
     | "disk" "." "top" -> disk_top
+    | "gpu" "." "util" -> gpu_util
     | "proc" "." "list" -> proc_list
     | "proc" "." "kill" INT -> proc_kill
     | "net" "." "interfaces" -> net_interfaces
@@ -188,6 +189,31 @@ class MetricsTransformer(Transformer[str, str]):
                 return "Disk Top: Unable to calculate directory sizes"
         except Exception:
             return "Disk Top: du command not available or error occurred"
+
+    def gpu_util(self, _children: list[str]) -> str:
+        """Get GPU utilization using nvidia-smi."""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                line = result.stdout.strip().split("\n")[0]
+                gpu_util, mem_used, mem_total = line.split(", ")
+                return (
+                    f"GPU Util: {gpu_util}% | "
+                    f"Memory: {mem_used}MB / {mem_total}MB"
+                )
+            else:
+                return "GPU Util: nvidia-smi returned error"
+        except FileNotFoundError:
+            return "GPU Util: nvidia-smi not available (NVIDIA GPU not detected)"
+        except Exception as e:
+            return f"GPU Util: Error - {e}"
 
     def proc_list(self, _children: list[str]) -> str:
         """List all processes with PID and basic info."""

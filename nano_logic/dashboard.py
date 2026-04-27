@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import textwrap
 from collections import deque
 from datetime import datetime
 
@@ -10,7 +11,6 @@ import psutil
 from lark.exceptions import LarkError
 from nano_logic.dsl import execute_command
 from nano_logic.monitoring.probes import (
-    get_cpu_load_average,
     get_disk_free_bytes,
     get_disk_usage_percent,
     get_gpu_utilization,
@@ -20,7 +20,7 @@ from nano_logic.ui.guide import render_guide
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Footer, Header, Input, Static
+from textual.widgets import Footer, Header, Input, Log, Static
 
 
 class SystemDashboardApp(App[None]):
@@ -74,13 +74,6 @@ class SystemDashboardApp(App[None]):
         width: 1fr;
     }
 
-    .metrics-row-2col {
-        layout: horizontal;
-        height: auto;
-        margin-bottom: 1;
-        width: 1fr;
-    }
-
     #cpu-panel {
         margin-right: 1;
     }
@@ -103,11 +96,22 @@ class SystemDashboardApp(App[None]):
 
     #command-panel {
         height: 1fr;
-        min-height: 8;
+        min-height: 10;
+        border: round #ff006e;
+        background: #241017;
+        color: #f5f7fa;
+        scrollbar-size-vertical: 1;
+        scrollbar-size-horizontal: 0;
+    }
+
+    #command-panel:hover {
+        scrollbar-size-horizontal: 1;
     }
 
     #command-input {
         margin-top: 0;
+        height: 3;
+        border: round #06d6d0;
     }
     """
 
@@ -122,13 +126,8 @@ class SystemDashboardApp(App[None]):
         super().__init__()
         self.command_history = [
             "Command Console",
-            "Ready. Try:",
-            "CPU: cpu.util, cpu.load, cpu.cores, cpu.top",
-            "MEM: mem.util, mem.stats, mem.swap, mem.top",
-            "DISK: disk.free, disk.usage, disk.io, disk.top",
-            "PROC: proc.list, proc.kill <pid>",
-            "NET: net.interfaces, net.bandwidth, net.connections",
-            "SYS: system.uptime, system.info, system.processes",
+            "Try: cpu.util | mem.util | gpu.util | disk.free",
+            "More: proc.list | proc.kill <pid> | net.interfaces | system.uptime",
         ]
         self.cpu_history = deque(maxlen=30)
         self.ram_history = deque(maxlen=30)
@@ -151,8 +150,8 @@ class SystemDashboardApp(App[None]):
                     yield Static("Network\nLoading...", id="net-panel", classes="panel metric-panel")
                     yield Static("System\nLoading...", id="system-panel", classes="panel metric-panel")
                 # Command panel
-                yield Static(self._render_command_panel(), id="command-panel", classes="panel")
-                yield Input(placeholder="Enter command: cpu.util, cpu.load, mem.util, mem.stats, disk.free", id="command-input")
+                yield Log(id="command-panel", classes="panel", highlight=False, auto_scroll=True)
+                yield Input(placeholder="Enter command: cpu.util, mem.util, gpu.util, disk.free", id="command-input")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -160,6 +159,9 @@ class SystemDashboardApp(App[None]):
         psutil.cpu_percent(interval=None)
         self.refresh_metrics()
         self.run_worker(self._metrics_loop(), name="metrics-loop", exclusive=True)
+        command_log = self.query_one("#command-panel", Log)
+        for line in self.command_history:
+            self._write_console_wrapped(line)
         self.query_one("#command-input", Input).focus()
 
     async def _metrics_loop(self) -> None:
@@ -176,7 +178,6 @@ class SystemDashboardApp(App[None]):
         gpu_percent = get_gpu_utilization()
         disk_percent = get_disk_usage_percent("/")
         disk_free, disk_total = get_disk_free_bytes("/")
-        cpu_load = get_cpu_load_average()
         sent_mib, recv_mib = get_net_totals_mib()
         process_count = len(psutil.pids())
         uptime_seconds = int(max(0.0, datetime.now().timestamp() - psutil.boot_time()))
@@ -193,38 +194,35 @@ class SystemDashboardApp(App[None]):
         net_widget = self.query_one("#net-panel", Static)
         system_widget = self.query_one("#system-panel", Static)
 
-        cpu_widget.update(self._render_cpu_panel(cpu_percent, cpu_load))
+        cpu_widget.update(self._render_cpu_panel(cpu_percent))
         ram_widget.update(self._render_ram_panel(memory.percent, memory.used, memory.total, swap.percent))
         gpu_widget.update(self._render_gpu_panel(gpu_percent))
         disk_widget.update(self._render_disk_panel(disk_percent, disk_free, disk_total))
         net_widget.update(self._render_net_panel(sent_mib, recv_mib))
         system_widget.update(self._render_system_panel(process_count, uptime_seconds))
 
-    def _render_cpu_panel(self, cpu_percent: float, cpu_load: tuple[float, float, float] | None) -> str:
-        bar = self._progress_bar(cpu_percent)
-        graph = self._render_mini_graph(list(self.cpu_history), 24, 4)
-        if cpu_load is None:
-            load_text = "Load: unavailable"
-        else:
-            load_text = f"Load 1/5/15: {cpu_load[0]:.1f} {cpu_load[1]:.1f} {cpu_load[2]:.1f}"
+    def _render_cpu_panel(self, cpu_percent: float) -> str:
+        avg = sum(self.cpu_history) / len(self.cpu_history) if self.cpu_history else 0.0
+        meter = self._render_meter(cpu_percent, width=10)
+        trend = self._render_trend_line(list(self.cpu_history), width=14)
         return (
             "CPU Usage\n"
-            f"Current: {cpu_percent:5.1f}%\n"
-            f"{load_text}\n"
-            f"{graph}\n"
-            f"{bar}"
+            f"Now:{cpu_percent:4.1f}% Avg:{avg:4.1f}%\n"
+            f"{meter}\n"
+            f"{trend}"
         )
 
-    def _render_ram_panel(self, ram_percent: float, used_bytes: int, total_bytes: int, swap_percent: float) -> str:
+    def _render_ram_panel(self, ram_percent: float, used_bytes: int, total_bytes: int, _swap_percent: float) -> str:
         used_gb = used_bytes / (1024 ** 3)
         total_gb = total_bytes / (1024 ** 3)
-        bar = self._progress_bar(ram_percent)
-        graph = self._render_mini_graph(list(self.ram_history), 24, 4)
+        meter = self._render_meter(ram_percent, width=8)
+        trend = self._render_trend_line(list(self.ram_history), width=10)
         return (
             "RAM Usage\n"
-            f"Current: {ram_percent:5.1f}% | Used: {used_gb:.1f}/{total_gb:.1f}GB | Swap: {swap_percent:.0f}%\n"
-            f"{graph}\n"
-            f"{bar}"
+            f"Now:{ram_percent:4.1f}%\n"
+            f"Used:{used_gb:.1f}/{total_gb:.1f}G\n"
+            f"{meter}\n"
+            f"{trend}"
         )
 
     def _render_gpu_panel(self, gpu_percent: float | None) -> str:
@@ -234,13 +232,14 @@ class SystemDashboardApp(App[None]):
                 "Current: N/A\n"
                 "nvidia-smi unavailable"
             )
-        bar = self._progress_bar(gpu_percent)
-        graph = self._render_mini_graph(list(self.gpu_history), 24, 4)
+        avg = sum(self.gpu_history) / len(self.gpu_history) if self.gpu_history else 0.0
+        meter = self._render_meter(gpu_percent, width=10)
+        trend = self._render_trend_line(list(self.gpu_history), width=14)
         return (
             "GPU Usage\n"
-            f"Current: {gpu_percent:5.1f}%\n"
-            f"{graph}\n"
-            f"{bar}"
+            f"Now:{gpu_percent:4.1f}% Avg:{avg:4.1f}%\n"
+            f"{meter}\n"
+            f"{trend}"
         )
 
     def _render_disk_panel(self, disk_percent: float, free_bytes: int, total_bytes: int) -> str:
@@ -270,13 +269,17 @@ class SystemDashboardApp(App[None]):
             f"Uptime: {hours}h {minutes}m"
         )
 
-    def _render_command_panel(self) -> str:
-        return "\n".join(self.command_history[-14:])
-
     def _append_console(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.command_history.append(f"[{timestamp}] {message}")
-        self.query_one("#command-panel", Static).update(self._render_command_panel())
+        line = f"[{timestamp}] {message}"
+        self.command_history.append(line)
+        self._write_console_wrapped(line)
+
+    def _write_console_wrapped(self, line: str) -> None:
+        """Write wrapped lines to keep the console readable in narrow terminals."""
+        log = self.query_one("#command-panel", Log)
+        for part in textwrap.wrap(line, width=86, replace_whitespace=False) or [""]:
+            log.write_line(part)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         command_text = event.value.strip()
@@ -303,26 +306,27 @@ class SystemDashboardApp(App[None]):
         return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
 
     @staticmethod
-    def _render_mini_graph(values: list[float], width: int = 24, height: int = 4) -> str:
-        """Render a simple ASCII sparkline graph."""
-        if not values:
+    def _render_meter(percent: float, width: int = 10) -> str:
+        """Render a clean percentage meter for quick readability."""
+        clamped = max(0.0, min(100.0, percent))
+        filled = int(round((clamped / 100.0) * width))
+        bar = "█" * filled + "░" * (width - filled)
+        return f"[{bar}] {clamped:3.0f}%"
+
+    @staticmethod
+    def _render_trend_line(values: list[float], width: int = 14) -> str:
+        """Render a compact one-line trend chart on a fixed 0-100 scale."""
+        if width <= 0:
             return ""
 
-        # Use sparkline characters for a nice graph
-        sparkline_chars = "▁▂▃▄▅▆▇█"
-        
-        # Get last `width` values
         values = values[-width:] if len(values) > width else values
-        pad_len = width - len(values)
-        values = [0] * pad_len + values
-        
-        # Normalize to 0-100 range for scaling
-        if values:
-            max_val = max(values) if max(values) > 0 else 100
-            normalized = [(v / max_val * (len(sparkline_chars) - 1)) for v in values]
-            graph = "".join(sparkline_chars[int(n)] for n in normalized)
-            return f"  {graph}"
-        return ""
+        values = [0.0] * (width - len(values)) + values
+
+        chars = "▁▂▃▄▅▆▇█"
+        return "".join(
+            chars[min(len(chars) - 1, int((max(0.0, min(100.0, v)) / 100.0) * (len(chars) - 1)))]
+            for v in values
+        )
 
 
 def main() -> None:
