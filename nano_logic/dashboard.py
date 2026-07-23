@@ -1,22 +1,18 @@
 """Textual terminal dashboard showing system metrics and logs."""
-
 from __future__ import annotations
 import asyncio
 import textwrap
 from collections import deque
 from datetime import datetime
-
 import psutil
 import subprocess
 import sys
 from lark.exceptions import LarkError
-
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Input, Log, Static
 from textual import events
-
 from nano_logic.dsl import execute_command
 from nano_logic.models import Rule, StopRule
 from nano_logic.engine import evaluate_active_rules, ACTIVE_RULES, remove_rule, load_rules, save_rules
@@ -58,7 +54,7 @@ class SystemDashboardApp(App[None]):
     }
 
     #guide-panel {
-        width: 34;
+        width: 38;
         min-width: 30;
         border: round #8ac926;
         padding: 1 2;
@@ -125,10 +121,10 @@ class SystemDashboardApp(App[None]):
         super().__init__()
         self.command_history = [
             "Command Console",
-            "Try: disk.free | disk.usage",
-            "More: proc.list | proc.kill <pid> | net.interfaces",
-            "Alerts: alert disk.free < 10 -> log",
-            "Type 'exit' to quit"
+            "Try: cpu.util | disk.free | net.ports | sensor.temp",
+            "Alerts: my_rule: alert cpu.util > 80 -> log",
+            "Utility: help | rules | status | clear",
+            "Type 'exit' to quit",
         ]
         self.commands_typed = []
         self.history_index = -1
@@ -138,15 +134,19 @@ class SystemDashboardApp(App[None]):
         """Build the app layout."""
         with Horizontal(id="app-layout"):
             yield Static(render_guide(), id="guide-panel")
+
             with Vertical(id="main-layout"):
                 with Horizontal(classes="metrics-row"):
                     yield Static("Disk Usage\nLoading...", id="disk-panel", classes="panel metric-panel")
                     yield Static("Network\nLoading...", id="net-panel", classes="panel metric-panel")
                     yield Static("System\nLoading...", id="system-panel", classes="panel metric-panel")
+
                 # Active Rules panel
                 yield Static("Active Rules:\nNo active rules.", id="rules-panel", classes="panel")
+
                 # Command panel
                 yield Log(id="command-panel", classes="panel", highlight=False, auto_scroll=True)
+
                 yield Input(placeholder="Enter command (type 'exit' to quit)", id="command-input")
 
     def on_mount(self) -> None:
@@ -154,8 +154,8 @@ class SystemDashboardApp(App[None]):
         # Ensure the background daemon is running
         try:
             daemon_running = False
-            for p in psutil.process_iter(['cmdline']):
-                if p.info['cmdline'] and 'daemon.py' in ' '.join(p.info['cmdline']):
+            for p in psutil.process_iter(["cmdline"]):
+                if p.info["cmdline"] and "daemon.py" in " ".join(p.info["cmdline"]):
                     daemon_running = True
                     break
             if not daemon_running:
@@ -163,7 +163,7 @@ class SystemDashboardApp(App[None]):
                     [sys.executable, "-m", "nano_logic.daemon"],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    start_new_session=True
+                    start_new_session=True,
                 )
         except Exception:
             pass
@@ -172,9 +172,9 @@ class SystemDashboardApp(App[None]):
         if ACTIVE_RULES:
             self.rule_counter = max(r.id for r in ACTIVE_RULES)
         self.update_rules_panel()
-        
         self.refresh_metrics()
         self.run_worker(self._metrics_loop(), name="metrics-loop", exclusive=True)
+
         command_log = self.query_one("#command-panel", Log)
         for line in self.command_history:
             self._write_console_wrapped(line)
@@ -268,7 +268,7 @@ class SystemDashboardApp(App[None]):
         else:
             self.history_index = min(len(self.commands_typed) - 1, self.history_index + 1)
             input_widget.value = self.commands_typed[self.history_index]
-        input_widget.cursor_position = len(input_widget.value)
+            input_widget.cursor_position = len(input_widget.value)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         command_text = event.value.strip()
@@ -276,7 +276,6 @@ class SystemDashboardApp(App[None]):
 
         if not command_text:
             return
-            
         if command_text.lower() in {"exit", "quit"}:
             self.exit()
             return
@@ -286,9 +285,10 @@ class SystemDashboardApp(App[None]):
         self.history_index = -1
 
         self._append_console(f"> {command_text}")
+
         try:
             result = execute_command(command_text)
-            
+
             if isinstance(result, Rule):
                 self.rule_counter += 1
                 result.id = self.rule_counter
@@ -296,10 +296,11 @@ class SystemDashboardApp(App[None]):
                     result.name = f"rule_{result.id}"
                 ACTIVE_RULES.append(result)
                 save_rules()
-                
-                self._append_console(f"✅ Rule '{result.name}' (ID: {result.id}) activated: Monitor {result.metric} {result.operator} {result.threshold}")
+                self._append_console(
+                    f"✅ Rule '{result.name}' (ID: {result.id}) activated: "
+                    f"Monitor {result.metric} {result.operator} {result.threshold}"
+                )
                 self.update_rules_panel()
-                
                 # Initialize the log file for this specific rule
                 try:
                     import os
@@ -309,19 +310,28 @@ class SystemDashboardApp(App[None]):
                         f.write(f"[{timestamp}] --- Rule '{result.name}' Activated ---\n")
                 except Exception as e:
                     self._append_console(f"⚠️ Error creating log file for '{result.name}': {e}")
-                
+
             elif isinstance(result, StopRule):
                 if remove_rule(result.identifier):
                     self._append_console(f"🛑 Rule '{result.identifier}' stopped.")
                     self.update_rules_panel()
                 else:
                     self._append_console(f"⚠️ Rule '{result.identifier}' not found.")
-            
+
+            # ── Handle utility command sentinels ──
+            elif result == "__CLEAR__":
+                self.query_one("#command-panel", Log).clear()
+                self.command_history.clear()
+                # Re-show the header
+                self._write_console_wrapped("Command Console")
+                self._write_console_wrapped("Try: cpu.util | disk.free | net.ports | sensor.temp")
+
             elif result:
                 self._append_console(str(result))
+
             else:
                 self._append_console("No output")
-                
+
         except LarkError as exc:
             self._append_console(f"Parse error: {exc}")
         except Exception as exc:
@@ -332,7 +342,6 @@ class SystemDashboardApp(App[None]):
         if not ACTIVE_RULES:
             rules_widget.update("Active Rules:\nNo active rules.")
             return
-            
         content = "Active Rules:\n"
         for r in ACTIVE_RULES:
             content += f"[{r.id}] {r.name}: alert {r.metric} {r.operator} {r.threshold} -> {r.action}\n"
