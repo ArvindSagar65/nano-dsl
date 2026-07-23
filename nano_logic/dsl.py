@@ -10,9 +10,28 @@ from lark import Lark, Transformer
 from lark.exceptions import LarkError
 from lark.tree import Tree
 
-DSL_GRAMMAR = r"""
-start: command
+from nano_logic.models import Rule, StopRule
 
+DSL_GRAMMAR = r"""
+?start: rule | command | rule_cmd
+
+# Declarative Alert Rule Structure
+?rule: named_rule | anon_rule
+named_rule: RULE_NAME ":" ALERT METRIC_NAME OPERATOR NUMBER ARROW ACTION
+anon_rule: ALERT METRIC_NAME OPERATOR NUMBER ARROW ACTION
+
+# Rule commands
+RULE_KW.2: "rule"
+rule_cmd: "stop" [RULE_KW] (INT | RULE_NAME) -> stop_rule
+
+ALERT: "alert"i
+ARROW: "->"
+RULE_NAME: /[a-zA-Z_][a-zA-Z0-9_-]*/
+METRIC_NAME: /[a-zA-Z_]+\.[a-zA-Z_]+/
+OPERATOR: ">" | "<" | "==" | ">=" | "<="
+ACTION: /[a-zA-Z_]+/
+
+# Existing System Commands
 command: "cpu" "." "util" -> cpu_util
     | "cpu" "." "load" -> cpu_load
     | "cpu" "." "cores" -> cpu_cores
@@ -37,18 +56,42 @@ command: "cpu" "." "util" -> cpu_util
 
 %import common.WS
 %import common.INT
+%import common.NUMBER
 %ignore WS
 """
 
 parser = Lark(DSL_GRAMMAR, parser="lalr")
 
 
-class MetricsTransformer(Transformer[str, str]):
+class MetricsTransformer(Transformer):
     """Executes matched DSL commands."""
 
-    def start(self, children: list[str]) -> str:
-        return children[0]
+    def anon_rule(self, items: list) -> Rule:
+        """Transforms matched anonymous rule tokens into a Rule dataclass object."""
+        return Rule(
+            metric=str(items[1]),
+            operator=str(items[2]),
+            threshold=float(items[3]),
+            action=str(items[5])
+        )
 
+    def named_rule(self, items: list) -> Rule:
+        """Transforms matched named rule tokens into a Rule dataclass object."""
+        return Rule(
+            name=str(items[0]),
+            metric=str(items[2]),
+            operator=str(items[3]),
+            threshold=float(items[4]),
+            action=str(items[6])
+        )
+
+    def stop_rule(self, items: list) -> StopRule:
+        """Transforms matched stop rule tokens into a StopRule dataclass object."""
+        return StopRule(identifier=str(items[-1]))
+
+    # (Keep all your existing command methods below this...)
+
+    # --- Existing Commands ---
     def cpu_util(self, _children: list[str]) -> str:
         return f"CPU Usage: {psutil.cpu_percent(interval=0.5):.1f}%"
 
@@ -295,7 +338,6 @@ class MetricsTransformer(Transformer[str, str]):
         """Get system uptime."""
         try:
             uptime_seconds = int(max(0.0, psutil.boot_time() + 86400 * 10000 - os.times()[4]))
-            # Better approach using direct timestamp
             import time
             boot_time = psutil.boot_time()
             current_time = time.time()
@@ -344,15 +386,13 @@ def _format_gib(value_bytes: int) -> float:
     return value_bytes / (1024 ** 3)
 
 
-
 def parse_command(command_text: str):
     """Parse a DSL command and return its parse tree."""
     return parser.parse(command_text)
 
 
-
-def execute_command(command_text: str) -> str:
-    """Parse and execute a DSL command."""
+def execute_command(command_text: str) -> str | Rule | StopRule:
+    """Parse and execute a DSL command. Returns a string for queries, or a Rule/StopRule object for alerts."""
     tree = parse_command(command_text)
     result = MetricsTransformer().transform(tree)
     if isinstance(result, Tree):

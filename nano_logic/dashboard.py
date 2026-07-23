@@ -1,26 +1,31 @@
-"""Textual terminal dashboard showing CPU, RAM, and logs."""
+"""Textual terminal dashboard showing system metrics and logs."""
 
 from __future__ import annotations
-
 import asyncio
 import textwrap
 from collections import deque
 from datetime import datetime
 
 import psutil
+import subprocess
+import sys
 from lark.exceptions import LarkError
-from nano_logic.dsl import execute_command
-from nano_logic.monitoring.probes import (
-    get_disk_free_bytes,
-    get_disk_usage_percent,
-    get_gpu_utilization,
-    get_net_totals_mib,
-)
-from nano_logic.ui.guide import render_guide
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Footer, Header, Input, Log, Static
+from textual.widgets import Input, Log, Static
+from textual import events
+
+from nano_logic.dsl import execute_command
+from nano_logic.models import Rule, StopRule
+from nano_logic.engine import evaluate_active_rules, ACTIVE_RULES, remove_rule, load_rules, save_rules
+from nano_logic.monitoring.probes import (
+    get_disk_free_bytes,
+    get_disk_usage_percent,
+    get_net_totals_mib,
+)
+from nano_logic.ui.guide import render_guide
 
 
 class SystemDashboardApp(App[None]):
@@ -74,18 +79,6 @@ class SystemDashboardApp(App[None]):
         width: 1fr;
     }
 
-    #cpu-panel {
-        margin-right: 1;
-    }
-
-    #ram-panel {
-        margin-right: 1;
-    }
-
-    #gpu-panel {
-        margin-right: 1;
-    }
-
     #disk-panel {
         margin-right: 1;
     }
@@ -104,8 +97,14 @@ class SystemDashboardApp(App[None]):
         scrollbar-size-horizontal: 0;
     }
 
-    #command-panel:hover {
-        scrollbar-size-horizontal: 1;
+    #rules-panel {
+        height: auto;
+        min-height: 6;
+        max-height: 12;
+        border: round #ff9f1c;
+        background: #141a24;
+        margin-bottom: 1;
+        overflow-y: auto;
     }
 
     #command-input {
@@ -118,45 +117,62 @@ class SystemDashboardApp(App[None]):
     BINDINGS = [Binding("q", "quit", "Quit")]
 
     command_history: list[str]
-    cpu_history: deque
-    ram_history: deque
-    gpu_history: deque
+    commands_typed: list[str]
+    history_index: int
+    rule_counter: int
 
     def __init__(self) -> None:
         super().__init__()
         self.command_history = [
             "Command Console",
-            "Try: cpu.util | mem.util | gpu.util | disk.free",
-            "More: proc.list | proc.kill <pid> | net.interfaces | system.uptime",
+            "Try: disk.free | disk.usage",
+            "More: proc.list | proc.kill <pid> | net.interfaces",
+            "Alerts: alert disk.free < 10 -> log",
+            "Type 'exit' to quit"
         ]
-        self.cpu_history = deque(maxlen=30)
-        self.ram_history = deque(maxlen=30)
-        self.gpu_history = deque(maxlen=30)
+        self.commands_typed = []
+        self.history_index = -1
+        self.rule_counter = 0
 
     def compose(self) -> ComposeResult:
         """Build the app layout."""
-        yield Header(show_clock=True)
         with Horizontal(id="app-layout"):
             yield Static(render_guide(), id="guide-panel")
             with Vertical(id="main-layout"):
-                # First row of metrics
-                with Horizontal(classes="metrics-row"):
-                    yield Static("CPU Usage\nLoading...", id="cpu-panel", classes="panel metric-panel")
-                    yield Static("RAM Usage\nLoading...", id="ram-panel", classes="panel metric-panel")
-                    yield Static("GPU Usage\nLoading...", id="gpu-panel", classes="panel metric-panel")
-                # Second row of metrics
                 with Horizontal(classes="metrics-row"):
                     yield Static("Disk Usage\nLoading...", id="disk-panel", classes="panel metric-panel")
                     yield Static("Network\nLoading...", id="net-panel", classes="panel metric-panel")
                     yield Static("System\nLoading...", id="system-panel", classes="panel metric-panel")
+                # Active Rules panel
+                yield Static("Active Rules:\nNo active rules.", id="rules-panel", classes="panel")
                 # Command panel
                 yield Log(id="command-panel", classes="panel", highlight=False, auto_scroll=True)
-                yield Input(placeholder="Enter command: cpu.util, mem.util, gpu.util, disk.free", id="command-input")
-        yield Footer()
+                yield Input(placeholder="Enter command (type 'exit' to quit)", id="command-input")
 
     def on_mount(self) -> None:
-        """Start periodic async metric updates."""
-        psutil.cpu_percent(interval=None)
+        """Start periodic async metric updates, load rules, and ensure daemon is running."""
+        # Ensure the background daemon is running
+        try:
+            daemon_running = False
+            for p in psutil.process_iter(['cmdline']):
+                if p.info['cmdline'] and 'daemon.py' in ' '.join(p.info['cmdline']):
+                    daemon_running = True
+                    break
+            if not daemon_running:
+                subprocess.Popen(
+                    [sys.executable, "-m", "nano_logic.daemon"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+        except Exception:
+            pass
+
+        load_rules()
+        if ACTIVE_RULES:
+            self.rule_counter = max(r.id for r in ACTIVE_RULES)
+        self.update_rules_panel()
+        
         self.refresh_metrics()
         self.run_worker(self._metrics_loop(), name="metrics-loop", exclusive=True)
         command_log = self.query_one("#command-panel", Log)
@@ -172,75 +188,19 @@ class SystemDashboardApp(App[None]):
 
     def refresh_metrics(self) -> None:
         """Read system metrics and update the UI panels."""
-        cpu_percent = psutil.cpu_percent(interval=None)
-        memory = psutil.virtual_memory()
-        swap = psutil.swap_memory()
-        gpu_percent = get_gpu_utilization()
         disk_percent = get_disk_usage_percent("/")
         disk_free, disk_total = get_disk_free_bytes("/")
         sent_mib, recv_mib = get_net_totals_mib()
         process_count = len(psutil.pids())
         uptime_seconds = int(max(0.0, datetime.now().timestamp() - psutil.boot_time()))
 
-        # Append to history
-        self.cpu_history.append(cpu_percent)
-        self.ram_history.append(memory.percent)
-        self.gpu_history.append(gpu_percent if gpu_percent is not None else 0)
-
-        cpu_widget = self.query_one("#cpu-panel", Static)
-        ram_widget = self.query_one("#ram-panel", Static)
-        gpu_widget = self.query_one("#gpu-panel", Static)
         disk_widget = self.query_one("#disk-panel", Static)
         net_widget = self.query_one("#net-panel", Static)
         system_widget = self.query_one("#system-panel", Static)
 
-        cpu_widget.update(self._render_cpu_panel(cpu_percent))
-        ram_widget.update(self._render_ram_panel(memory.percent, memory.used, memory.total, swap.percent))
-        gpu_widget.update(self._render_gpu_panel(gpu_percent))
         disk_widget.update(self._render_disk_panel(disk_percent, disk_free, disk_total))
         net_widget.update(self._render_net_panel(sent_mib, recv_mib))
         system_widget.update(self._render_system_panel(process_count, uptime_seconds))
-
-    def _render_cpu_panel(self, cpu_percent: float) -> str:
-        avg = sum(self.cpu_history) / len(self.cpu_history) if self.cpu_history else 0.0
-        meter = self._render_meter(cpu_percent, width=10)
-        trend = self._render_trend_line(list(self.cpu_history), width=14)
-        return (
-            "CPU Usage\n"
-            f"Now:{cpu_percent:4.1f}% Avg:{avg:4.1f}%\n"
-            f"{meter}\n"
-            f"{trend}"
-        )
-
-    def _render_ram_panel(self, ram_percent: float, used_bytes: int, total_bytes: int, _swap_percent: float) -> str:
-        used_gb = used_bytes / (1024 ** 3)
-        total_gb = total_bytes / (1024 ** 3)
-        meter = self._render_meter(ram_percent, width=8)
-        trend = self._render_trend_line(list(self.ram_history), width=10)
-        return (
-            "RAM Usage\n"
-            f"Now:{ram_percent:4.1f}%\n"
-            f"Used:{used_gb:.1f}/{total_gb:.1f}G\n"
-            f"{meter}\n"
-            f"{trend}"
-        )
-
-    def _render_gpu_panel(self, gpu_percent: float | None) -> str:
-        if gpu_percent is None:
-            return (
-                "GPU Usage\n"
-                "Current: N/A\n"
-                "nvidia-smi unavailable"
-            )
-        avg = sum(self.gpu_history) / len(self.gpu_history) if self.gpu_history else 0.0
-        meter = self._render_meter(gpu_percent, width=10)
-        trend = self._render_trend_line(list(self.gpu_history), width=14)
-        return (
-            "GPU Usage\n"
-            f"Now:{gpu_percent:4.1f}% Avg:{avg:4.1f}%\n"
-            f"{meter}\n"
-            f"{trend}"
-        )
 
     def _render_disk_panel(self, disk_percent: float, free_bytes: int, total_bytes: int) -> str:
         free_gb = free_bytes / (1024 ** 3)
@@ -281,52 +241,107 @@ class SystemDashboardApp(App[None]):
         for part in textwrap.wrap(line, width=86, replace_whitespace=False) or [""]:
             log.write_line(part)
 
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "up":
+            self._history_up()
+        elif event.key == "down":
+            self._history_down()
+
+    def _history_up(self) -> None:
+        input_widget = self.query_one("#command-input", Input)
+        if not input_widget.has_focus or not self.commands_typed:
+            return
+        if self.history_index == -1:
+            self.history_index = len(self.commands_typed) - 1
+        else:
+            self.history_index = max(0, self.history_index - 1)
+        input_widget.value = self.commands_typed[self.history_index]
+        input_widget.cursor_position = len(input_widget.value)
+
+    def _history_down(self) -> None:
+        input_widget = self.query_one("#command-input", Input)
+        if not input_widget.has_focus or not self.commands_typed:
+            return
+        if self.history_index == -1 or self.history_index >= len(self.commands_typed) - 1:
+            self.history_index = -1
+            input_widget.value = ""
+        else:
+            self.history_index = min(len(self.commands_typed) - 1, self.history_index + 1)
+            input_widget.value = self.commands_typed[self.history_index]
+        input_widget.cursor_position = len(input_widget.value)
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         command_text = event.value.strip()
         event.input.value = ""
 
         if not command_text:
             return
+            
+        if command_text.lower() in {"exit", "quit"}:
+            self.exit()
+            return
+
+        if not self.commands_typed or self.commands_typed[-1] != command_text:
+            self.commands_typed.append(command_text)
+        self.history_index = -1
 
         self._append_console(f"> {command_text}")
         try:
             result = execute_command(command_text)
-            if result:
-                self._append_console(result)
+            
+            if isinstance(result, Rule):
+                self.rule_counter += 1
+                result.id = self.rule_counter
+                if not result.name:
+                    result.name = f"rule_{result.id}"
+                ACTIVE_RULES.append(result)
+                save_rules()
+                
+                self._append_console(f"✅ Rule '{result.name}' (ID: {result.id}) activated: Monitor {result.metric} {result.operator} {result.threshold}")
+                self.update_rules_panel()
+                
+                # Initialize the log file for this specific rule
+                try:
+                    import os
+                    os.makedirs("logs", exist_ok=True)
+                    with open(f"logs/{result.name}.log", "a") as f:
+                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        f.write(f"[{timestamp}] --- Rule '{result.name}' Activated ---\n")
+                except Exception as e:
+                    self._append_console(f"⚠️ Error creating log file for '{result.name}': {e}")
+                
+            elif isinstance(result, StopRule):
+                if remove_rule(result.identifier):
+                    self._append_console(f"🛑 Rule '{result.identifier}' stopped.")
+                    self.update_rules_panel()
+                else:
+                    self._append_console(f"⚠️ Rule '{result.identifier}' not found.")
+            
+            elif result:
+                self._append_console(str(result))
             else:
                 self._append_console("No output")
+                
         except LarkError as exc:
             self._append_console(f"Parse error: {exc}")
         except Exception as exc:
             self._append_console(f"Execution error: {exc}")
 
+    def update_rules_panel(self) -> None:
+        rules_widget = self.query_one("#rules-panel", Static)
+        if not ACTIVE_RULES:
+            rules_widget.update("Active Rules:\nNo active rules.")
+            return
+            
+        content = "Active Rules:\n"
+        for r in ACTIVE_RULES:
+            content += f"[{r.id}] {r.name}: alert {r.metric} {r.operator} {r.threshold} -> {r.action}\n"
+        rules_widget.update(content.strip())
+
     @staticmethod
     def _progress_bar(percent: float, width: int = 30) -> str:
         filled = int((percent / 100) * width)
         return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
-
-    @staticmethod
-    def _render_meter(percent: float, width: int = 10) -> str:
-        """Render a clean percentage meter for quick readability."""
-        clamped = max(0.0, min(100.0, percent))
-        filled = int(round((clamped / 100.0) * width))
-        bar = "█" * filled + "░" * (width - filled)
-        return f"[{bar}] {clamped:3.0f}%"
-
-    @staticmethod
-    def _render_trend_line(values: list[float], width: int = 14) -> str:
-        """Render a compact one-line trend chart on a fixed 0-100 scale."""
-        if width <= 0:
-            return ""
-
-        values = values[-width:] if len(values) > width else values
-        values = [0.0] * (width - len(values)) + values
-
-        chars = "▁▂▃▄▅▆▇█"
-        return "".join(
-            chars[min(len(chars) - 1, int((max(0.0, min(100.0, v)) / 100.0) * (len(chars) - 1)))]
-            for v in values
-        )
 
 
 def main() -> None:
