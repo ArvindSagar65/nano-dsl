@@ -78,8 +78,8 @@ sensor_cmd: "sensor" "." "temp"    -> sensor_temp
           | "sensor" "." "fans"    -> sensor_fans
           | "sensor" "." "battery" -> sensor_battery
 
-docker_cmd: "docker" "." "ps"      -> docker_ps
-          | "docker" "." "stats"   -> docker_stats
+docker_cmd: "docker" "ps"      -> docker_ps
+          | "docker" "stats"   -> docker_stats
 
 service_cmd: "service" "." "list"          -> service_list
            | "service" "." "status" CMD    -> service_status
@@ -616,7 +616,7 @@ class MetricsTransformer(Transformer):
             "  Network:    net.interfaces, net.bandwidth, net.connections, net.ports, net.dns <host>\n"
             "  System:     system.uptime, system.info, system.processes, system.users, system.load\n"
             "  Sensors:    sensor.temp, sensor.fans, sensor.battery\n"
-            "  Docker:     docker.ps, docker.stats\n"
+            "  Docker:     docker ps, docker stats\n"
             "  Services:   service.list, service.status <name>\n"
             "  Utility:    clear, help, rules, status, history, guide\n\n"
             "  Alerts:     <name>: alert <metric> <op> <val> -> <action>\n"
