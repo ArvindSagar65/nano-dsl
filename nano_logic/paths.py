@@ -37,3 +37,8 @@ def get_logs_dir() -> Path:
     logs_dir = get_state_dir() / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     return logs_dir
+
+
+def get_app_log_file() -> Path:
+    """Return the path to nano-dsl's own diagnostic log (separate from per-rule alert logs)."""
+    return get_state_dir() / "nano-dsl.log"

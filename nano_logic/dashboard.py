@@ -16,6 +16,7 @@ from textual import events
 from nano_logic.dsl import execute_command
 from nano_logic.models import Rule, StopRule
 from nano_logic.engine import evaluate_active_rules, ACTIVE_RULES, remove_rule, load_rules, save_rules
+from nano_logic.logging_config import configure_logging
 from nano_logic.monitoring.probes import (
     get_disk_free_bytes,
     get_disk_usage_percent,
@@ -23,6 +24,8 @@ from nano_logic.monitoring.probes import (
 )
 from nano_logic.paths import get_logs_dir
 from nano_logic.ui.guide import render_guide
+
+logger = configure_logging(__name__)
 
 
 class SystemDashboardApp(App[None]):
@@ -162,8 +165,8 @@ class SystemDashboardApp(App[None]):
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
-        except Exception:
-            pass
+        except OSError:
+            logger.exception("Failed to spawn background daemon")
 
         load_rules()
         if ACTIVE_RULES:

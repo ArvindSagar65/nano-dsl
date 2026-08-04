@@ -4,8 +4,11 @@ import os
 import time
 import psutil
 from dataclasses import asdict
+from nano_logic.logging_config import configure_logging
 from nano_logic.models import Rule
 from nano_logic.paths import get_rules_file
+
+logger = configure_logging(__name__)
 
 # Master list of all running rules
 ACTIVE_RULES: list[Rule] = []
@@ -20,8 +23,8 @@ def save_rules() -> None:
     try:
         with open(RULES_FILE, "w") as f:
             json.dump([asdict(r) for r in ACTIVE_RULES], f, indent=4)
-    except Exception:
-        pass  # Running in background — don't corrupt TUI
+    except OSError:
+        logger.exception("Failed to save rules to %s", RULES_FILE)
 
 
 def load_rules() -> None:
@@ -34,8 +37,8 @@ def load_rules() -> None:
             data = json.load(f)
             ACTIVE_RULES.clear()
             ACTIVE_RULES.extend([Rule(**r) for r in data])
-    except Exception:
-        pass
+    except (OSError, json.JSONDecodeError, TypeError):
+        logger.exception("Failed to load rules from %s", RULES_FILE)
 
 # ──────────────────────────────────────────────
 #  Metric fetching — single source of truth
