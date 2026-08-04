@@ -148,12 +148,25 @@ _OPERATORS = {
     "<=": lambda v, t: v <= t,   # ← FIXED: was missing
 }
 
+# Once a rule fires, suppress repeat firings for this long. Without this,
+# a persistently-breached rule (e.g. a full disk) re-fires every
+# evaluation tick forever, flooding its log file and ringing the bell
+# once per second indefinitely.
+DEFAULT_ALERT_COOLDOWN_SECONDS = 60.0
 
-def evaluate_active_rules() -> list[tuple[Rule, float]]:
+# Per-rule-id timestamp of the last time it fired. Cleared for a rule
+# once its condition stops being breached, so it re-arms immediately
+# rather than staying suppressed until an old cooldown window lapses.
+_last_triggered_at: dict[int, float] = {}
+
+
+def evaluate_active_rules(cooldown_seconds: float = DEFAULT_ALERT_COOLDOWN_SECONDS) -> list[tuple[Rule, float]]:
     """
     Evaluate all rules in ACTIVE_RULES against current metric values.
-    Returns a list of (Rule, current_value) tuples for every breached rule.
+    Returns a list of (Rule, current_value) tuples for every breached rule
+    that hasn't already fired within the cooldown window.
     """
+    now = time.time()
     triggered = []
     for rule in ACTIVE_RULES:
         current_val = fetch_metric_value(rule.metric)
@@ -164,8 +177,16 @@ def evaluate_active_rules() -> list[tuple[Rule, float]]:
         if op_fn is None:
             continue  # unknown operator, skip
 
-        if op_fn(current_val, rule.threshold):
-            triggered.append((rule, current_val))
+        if not op_fn(current_val, rule.threshold):
+            _last_triggered_at.pop(rule.id, None)
+            continue
+
+        last_fired = _last_triggered_at.get(rule.id, 0.0)
+        if now - last_fired < cooldown_seconds:
+            continue
+
+        _last_triggered_at[rule.id] = now
+        triggered.append((rule, current_val))
 
     return triggered
 
@@ -180,6 +201,7 @@ def remove_rule(identifier: str) -> bool:
     for i, rule in enumerate(ACTIVE_RULES):
         if str(rule.id) == identifier or rule.name == identifier:
             ACTIVE_RULES.pop(i)
+            _last_triggered_at.pop(rule.id, None)
             save_rules()
             return True
     return False

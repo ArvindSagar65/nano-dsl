@@ -284,6 +284,41 @@ class TestEngine:
         alerts = evaluate_active_rules()
         assert isinstance(alerts, list)
 
+    def test_alert_cooldown_suppresses_repeat_firing(self):
+        """A persistently-breached rule should only fire once per cooldown window."""
+        from nano_logic.engine import _last_triggered_at
+
+        rule = Rule(metric="proc.count", operator=">", threshold=-1, action="log", id=1)
+        ACTIVE_RULES.append(rule)
+        try:
+            first = evaluate_active_rules(cooldown_seconds=60.0)
+            assert any(r.id == 1 for r, _ in first)
+
+            second = evaluate_active_rules(cooldown_seconds=60.0)
+            assert not any(r.id == 1 for r, _ in second), "rule refired inside its cooldown window"
+
+            # A near-zero cooldown should let it fire again immediately.
+            third = evaluate_active_rules(cooldown_seconds=0.0)
+            assert any(r.id == 1 for r, _ in third)
+        finally:
+            _last_triggered_at.pop(1, None)
+
+    def test_alert_cooldown_resets_when_condition_clears(self):
+        """A rule that stops breaching should re-arm instead of staying suppressed."""
+        from nano_logic.engine import _last_triggered_at
+
+        rule = Rule(metric="proc.count", operator=">", threshold=-1, action="log", id=2)
+        ACTIVE_RULES.append(rule)
+        try:
+            evaluate_active_rules(cooldown_seconds=60.0)
+            assert 2 in _last_triggered_at
+
+            rule.threshold = 10 ** 9  # condition no longer breached
+            evaluate_active_rules(cooldown_seconds=60.0)
+            assert 2 not in _last_triggered_at
+        finally:
+            _last_triggered_at.pop(2, None)
+
     @pytest.mark.parametrize("operator", [">", "<", "==", ">=", "<="])
     def test_all_operators_in_engine(self, operator):
         """Verify that all operators exist in the engine's operator map."""
