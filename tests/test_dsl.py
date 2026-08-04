@@ -1,7 +1,7 @@
 """Comprehensive test suite for Nano-DSL grammar and engine."""
 import pytest
 from lark.exceptions import LarkError, UnexpectedInput
-from nano_logic.dsl import execute_command, parse_command, DSL_GRAMMAR, parser
+from nano_logic.dsl import execute_command, parse_command
 from nano_logic.models import Rule, StopRule
 from nano_logic.engine import (
     ACTIVE_RULES, save_rules, load_rules, remove_rule,
@@ -163,10 +163,27 @@ class TestCommandExecution:
         # PID 1 should exist on any Unix system
         assert "Process Info" in result or "not found" in result
 
-    def test_net_dns_returns_string(self):
+    def test_net_dns_returns_string(self, monkeypatch):
+        """Mocked so this test doesn't depend on outbound DNS actually working —
+        this project explicitly targets offline/firewalled homelab environments."""
+        monkeypatch.setattr(
+            "socket.gethostbyname_ex",
+            lambda host: (host, [], ["93.184.216.34"]),
+        )
         result = execute_command("net.dns google.com")
         assert isinstance(result, str)
-        assert "google.com" in result.lower() or "Error" in result
+        assert "google.com" in result.lower()
+
+    def test_net_dns_handles_lookup_failure(self, monkeypatch):
+        import socket as socket_module
+
+        def raise_gaierror(host):
+            raise socket_module.gaierror("Name or service not known")
+
+        monkeypatch.setattr("socket.gethostbyname_ex", raise_gaierror)
+        result = execute_command("net.dns nonexistent.invalid")
+        assert isinstance(result, str)
+        assert "nonexistent.invalid" in result
 
     def test_docker_commands_graceful(self):
         """Docker may not be installed — should not crash."""
@@ -279,10 +296,103 @@ class TestEngine:
     def test_remove_nonexistent_rule(self):
         assert remove_rule("nonexistent") is False
 
+    def test_add_rule_assigns_unique_incrementing_ids(self):
+        from nano_logic.engine import add_rule
+
+        r1 = add_rule(execute_command("alert cpu.util > 80 -> log"))
+        r2 = add_rule(execute_command("alert mem.util > 80 -> log"))
+        assert r1.id != r2.id
+        assert r2.id == r1.id + 1
+
+    def test_add_rule_survives_gaps_from_removed_rules(self):
+        """New ids should never collide with an existing rule's id, even after removals."""
+        from nano_logic.engine import add_rule
+
+        r1 = add_rule(execute_command("alert cpu.util > 80 -> log"))
+        r2 = add_rule(execute_command("alert mem.util > 80 -> log"))
+        remove_rule(str(r1.id))
+        r3 = add_rule(execute_command("alert disk.free < 5 -> log"))
+        assert r3.id not in {r1.id, r2.id}
+
+    def test_remove_rule_id_match_takes_priority_over_name_match(self):
+        """A rule named the same as another rule's id shouldn't shadow the id-based removal."""
+        by_id = Rule(metric="cpu.util", operator=">", threshold=1, action="log", id=7, name="seven")
+        by_name = Rule(metric="mem.util", operator=">", threshold=1, action="log", id=99, name="7")
+        ACTIVE_RULES.extend([by_id, by_name])
+
+        assert remove_rule("7") is True
+        assert by_id not in ACTIVE_RULES
+        assert by_name in ACTIVE_RULES
+
     def test_evaluate_no_crash(self):
         """evaluate_active_rules should never crash even with no rules."""
         alerts = evaluate_active_rules()
         assert isinstance(alerts, list)
+
+    def test_alert_cooldown_suppresses_repeat_firing(self):
+        """A persistently-breached rule should only fire once per cooldown window."""
+        from nano_logic.engine import _last_triggered_at
+
+        rule = Rule(metric="proc.count", operator=">", threshold=-1, action="log", id=1)
+        ACTIVE_RULES.append(rule)
+        try:
+            first = evaluate_active_rules(cooldown_seconds=60.0)
+            assert any(r.id == 1 for r, _ in first)
+
+            second = evaluate_active_rules(cooldown_seconds=60.0)
+            assert not any(r.id == 1 for r, _ in second), "rule refired inside its cooldown window"
+
+            # A near-zero cooldown should let it fire again immediately.
+            third = evaluate_active_rules(cooldown_seconds=0.0)
+            assert any(r.id == 1 for r, _ in third)
+        finally:
+            _last_triggered_at.pop(1, None)
+
+    def test_alert_cooldown_resets_when_condition_clears(self):
+        """A rule that stops breaching should re-arm instead of staying suppressed."""
+        from nano_logic.engine import _last_triggered_at
+
+        rule = Rule(metric="proc.count", operator=">", threshold=-1, action="log", id=2)
+        ACTIVE_RULES.append(rule)
+        try:
+            evaluate_active_rules(cooldown_seconds=60.0)
+            assert 2 in _last_triggered_at
+
+            rule.threshold = 10 ** 9  # condition no longer breached
+            evaluate_active_rules(cooldown_seconds=60.0)
+            assert 2 not in _last_triggered_at
+        finally:
+            _last_triggered_at.pop(2, None)
+
+    def test_evaluate_active_rules_fetches_shared_metric_only_once_per_tick(self):
+        """Multiple rules watching the same metric must only fetch it once per
+        tick. Fetching per-rule caused wrong readings for "since last call"
+        metrics like psutil.cpu_percent(interval=None): a second call
+        microseconds after the first measures a near-zero elapsed slice and
+        Linux's clock-tick accounting quantizes that into garbage (0/50/100%)
+        instead of a real value.
+        """
+        from nano_logic.engine import _METRIC_REGISTRY, _last_triggered_at
+
+        call_count = {"n": 0}
+
+        def fake_metric():
+            call_count["n"] += 1
+            return 42.0
+
+        _METRIC_REGISTRY["test.shared_metric"] = fake_metric
+        r1 = Rule(metric="test.shared_metric", operator=">", threshold=1, action="log", id=101)
+        r2 = Rule(metric="test.shared_metric", operator=">", threshold=1, action="log", id=102)
+        ACTIVE_RULES.extend([r1, r2])
+        try:
+            triggered = evaluate_active_rules(cooldown_seconds=60.0)
+            assert call_count["n"] == 1, "shared metric was fetched more than once in a single tick"
+            assert {r.id for r, _ in triggered} == {101, 102}
+            assert all(val == 42.0 for _, val in triggered)
+        finally:
+            del _METRIC_REGISTRY["test.shared_metric"]
+            _last_triggered_at.pop(101, None)
+            _last_triggered_at.pop(102, None)
 
     @pytest.mark.parametrize("operator", [">", "<", "==", ">=", "<="])
     def test_all_operators_in_engine(self, operator):
@@ -308,9 +418,9 @@ class TestEngine:
         load_rules()
         assert len(ACTIVE_RULES) >= 1
         # Clean up
-        import os
-        if os.path.exists("rules.json"):
-            os.remove("rules.json")
+        from nano_logic.engine import RULES_FILE
+        if RULES_FILE.exists():
+            RULES_FILE.unlink()
 
 
 # ═══════════════════════════════════════════════
@@ -403,3 +513,88 @@ class TestProbes:
     def test_logged_in_users(self):
         users = probes.get_logged_in_users()
         assert isinstance(users, list)
+
+
+# ═══════════════════════════════════════════════
+#  7. DASHBOARD — alert notification tailing
+# ═══════════════════════════════════════════════
+
+class TestDashboardAlertNotifications:
+    """The dashboard runs in a separate process from the daemon that
+    actually evaluates rules, so it learns a rule fired by tailing that
+    rule's own log file. Driven directly with asyncio.run() around
+    App.run_test() rather than pytest-asyncio, which isn't a dependency."""
+
+    def setup_method(self):
+        ACTIVE_RULES.clear()
+
+    def teardown_method(self):
+        ACTIVE_RULES.clear()
+
+    def test_new_alert_line_is_surfaced_in_console_and_rings_bell(self, monkeypatch):
+        import asyncio
+        from nano_logic.dashboard import SystemDashboardApp
+        from nano_logic.paths import get_logs_dir
+
+        # on_mount() unconditionally spawns a real `nano_logic.daemon`
+        # subprocess. Left unpatched, every test that mounts the app leaks
+        # a real, permanently-running background process (it successfully
+        # acquires its own PID-file lock and never exits on its own).
+        monkeypatch.setattr("nano_logic.dashboard.subprocess.Popen", lambda *a, **k: None)
+
+        async def scenario():
+            rule = Rule(metric="cpu.util", operator=">", threshold=1, action="log", id=1, name="bell_test_rule")
+            ACTIVE_RULES.append(rule)
+            log_path = get_logs_dir() / f"{rule.name}.log"
+            log_path.write_text("[00:00:00] --- Rule 'bell_test_rule' Activated ---\n")
+
+            app = SystemDashboardApp()
+            try:
+                async with app.run_test():
+                    # First poll only seeds the read offset — it must not
+                    # replay the pre-existing "Activated" line as an alert.
+                    app._check_for_new_alerts()
+                    assert not any("ALERT" in line for line in app.command_history)
+
+                    with open(log_path, "a") as f:
+                        f.write("[00:00:05] \U0001f6a8 [ALERT] cpu.util reached 42.0 (Rule: > 1.0)\n")
+
+                    rung = []
+                    app.bell = lambda: rung.append(True)  # headless bell() is a no-op; observe the call instead
+                    app._check_for_new_alerts()
+
+                    console_text = "\n".join(app.command_history)
+                    assert "bell_test_rule" in console_text
+                    assert "42.0" in console_text
+                    assert rung, "bell() was not called for a newly-fired alert"
+            finally:
+                log_path.unlink(missing_ok=True)
+
+        asyncio.run(scenario())
+
+    def test_removed_rule_stops_being_tracked(self, monkeypatch):
+        import asyncio
+        from nano_logic.dashboard import SystemDashboardApp
+        from nano_logic.paths import get_logs_dir
+
+        monkeypatch.setattr("nano_logic.dashboard.subprocess.Popen", lambda *a, **k: None)
+
+        async def scenario():
+            rule = Rule(metric="cpu.util", operator=">", threshold=1, action="log", id=2, name="untracked_rule")
+            ACTIVE_RULES.append(rule)
+            log_path = get_logs_dir() / f"{rule.name}.log"
+            log_path.write_text("[00:00:00] --- Rule 'untracked_rule' Activated ---\n")
+
+            app = SystemDashboardApp()
+            try:
+                async with app.run_test():
+                    app._check_for_new_alerts()
+                    assert rule.id in app._alert_log_offsets
+
+                    ACTIVE_RULES.remove(rule)
+                    app._check_for_new_alerts()
+                    assert rule.id not in app._alert_log_offsets
+            finally:
+                log_path.unlink(missing_ok=True)
+
+        asyncio.run(scenario())

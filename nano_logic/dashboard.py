@@ -2,7 +2,6 @@
 from __future__ import annotations
 import asyncio
 import textwrap
-from collections import deque
 from datetime import datetime
 import psutil
 import subprocess
@@ -15,13 +14,17 @@ from textual.widgets import Input, Log, Static
 from textual import events
 from nano_logic.dsl import execute_command
 from nano_logic.models import Rule, StopRule
-from nano_logic.engine import evaluate_active_rules, ACTIVE_RULES, remove_rule, load_rules, save_rules
+from nano_logic.engine import ACTIVE_RULES, add_rule, remove_rule, load_rules
+from nano_logic.logging_config import configure_logging
 from nano_logic.monitoring.probes import (
     get_disk_free_bytes,
     get_disk_usage_percent,
     get_net_totals_mib,
 )
+from nano_logic.paths import get_logs_dir
 from nano_logic.ui.guide import render_guide
+
+logger = configure_logging(__name__)
 
 
 class SystemDashboardApp(App[None]):
@@ -115,7 +118,6 @@ class SystemDashboardApp(App[None]):
     command_history: list[str]
     commands_typed: list[str]
     history_index: int
-    rule_counter: int
 
     def __init__(self) -> None:
         super().__init__()
@@ -128,7 +130,12 @@ class SystemDashboardApp(App[None]):
         ]
         self.commands_typed = []
         self.history_index = -1
-        self.rule_counter = 0
+        # Byte offset already read in each rule's log file, keyed by rule
+        # id. The daemon is a separate process and the only thing that
+        # evaluates rules, so tailing the log file it writes is how the
+        # dashboard learns a rule fired — there's no other channel between
+        # the two beyond the files they both read/write.
+        self._alert_log_offsets: dict[int, int] = {}
 
     def compose(self) -> ComposeResult:
         """Build the app layout."""
@@ -151,31 +158,24 @@ class SystemDashboardApp(App[None]):
 
     def on_mount(self) -> None:
         """Start periodic async metric updates, load rules, and ensure daemon is running."""
-        # Ensure the background daemon is running
+        # Always attempt to spawn the daemon — it uses an flock()'d PID file
+        # to enforce a single instance, so a redundant spawn just exits
+        # immediately rather than racing with an already-running daemon.
         try:
-            daemon_running = False
-            for p in psutil.process_iter(["cmdline"]):
-                if p.info["cmdline"] and "daemon.py" in " ".join(p.info["cmdline"]):
-                    daemon_running = True
-                    break
-            if not daemon_running:
-                subprocess.Popen(
-                    [sys.executable, "-m", "nano_logic.daemon"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-        except Exception:
-            pass
+            subprocess.Popen(
+                [sys.executable, "-m", "nano_logic.daemon"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError:
+            logger.exception("Failed to spawn background daemon")
 
         load_rules()
-        if ACTIVE_RULES:
-            self.rule_counter = max(r.id for r in ACTIVE_RULES)
         self.update_rules_panel()
         self.refresh_metrics()
         self.run_worker(self._metrics_loop(), name="metrics-loop", exclusive=True)
 
-        command_log = self.query_one("#command-panel", Log)
         for line in self.command_history:
             self._write_console_wrapped(line)
         self.query_one("#command-input", Input).focus()
@@ -184,7 +184,58 @@ class SystemDashboardApp(App[None]):
         """Refresh system values every second."""
         while True:
             self.refresh_metrics()
+            self._check_for_new_alerts()
             await asyncio.sleep(1)
+
+    def _check_for_new_alerts(self) -> None:
+        """Surface alert lines the daemon has written since the last tick.
+
+        Reads only the bytes appended to each active rule's log file since
+        it was last checked, so this stays cheap regardless of how large
+        the log grows.
+        """
+        active_ids = set()
+        for rule in ACTIVE_RULES:
+            active_ids.add(rule.id)
+            log_path = get_logs_dir() / f"{rule.name}.log"
+
+            if rule.id not in self._alert_log_offsets:
+                # First time seeing this rule this session — start from the
+                # current end of file so we don't replay alerts that fired
+                # before the dashboard started watching it.
+                self._alert_log_offsets[rule.id] = log_path.stat().st_size if log_path.exists() else 0
+                continue
+
+            if not log_path.exists():
+                continue
+
+            try:
+                size = log_path.stat().st_size
+                offset = self._alert_log_offsets[rule.id]
+                if size < offset:
+                    offset = 0  # log was rotated/truncated — restart from the top
+                if size == offset:
+                    continue
+                with open(log_path) as f:
+                    f.seek(offset)
+                    new_content = f.read()
+                self._alert_log_offsets[rule.id] = size
+            except OSError:
+                logger.exception("Failed to tail alert log for rule '%s'", rule.name)
+                continue
+
+            for line in new_content.splitlines():
+                if "[ALERT]" not in line:
+                    continue
+                # Log lines are already timestamped ("[HH:MM:SS] message");
+                # drop that prefix since _append_console adds its own.
+                _, _, message = line.partition("] ")
+                self._append_console(f"{rule.name}: {message or line}")
+                self.bell()
+
+        # Stop tracking rules that were removed or renamed.
+        for stale_id in set(self._alert_log_offsets) - active_ids:
+            del self._alert_log_offsets[stale_id]
 
     def refresh_metrics(self) -> None:
         """Read system metrics and update the UI panels."""
@@ -290,12 +341,7 @@ class SystemDashboardApp(App[None]):
             result = execute_command(command_text)
 
             if isinstance(result, Rule):
-                self.rule_counter += 1
-                result.id = self.rule_counter
-                if not result.name:
-                    result.name = f"rule_{result.id}"
-                ACTIVE_RULES.append(result)
-                save_rules()
+                add_rule(result)
                 self._append_console(
                     f"✅ Rule '{result.name}' (ID: {result.id}) activated: "
                     f"Monitor {result.metric} {result.operator} {result.threshold}"
@@ -303,12 +349,11 @@ class SystemDashboardApp(App[None]):
                 self.update_rules_panel()
                 # Initialize the log file for this specific rule
                 try:
-                    import os
-                    os.makedirs("logs", exist_ok=True)
-                    with open(f"logs/{result.name}.log", "a") as f:
+                    with open(get_logs_dir() / f"{result.name}.log", "a") as f:
                         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         f.write(f"[{timestamp}] --- Rule '{result.name}' Activated ---\n")
-                except Exception as e:
+                except OSError as e:
+                    logger.exception("Failed to create log file for rule '%s'", result.name)
                     self._append_console(f"⚠️ Error creating log file for '{result.name}': {e}")
 
             elif isinstance(result, StopRule):

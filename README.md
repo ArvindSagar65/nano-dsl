@@ -8,7 +8,7 @@ A lightweight terminal-based system monitoring dashboard with a custom DSL for q
 - **40+ DSL Commands**: 10 metric categories covering CPU, Memory, Disk, GPU, Processes, Network, System, Sensors, Docker, and Services.
 - **Alert Rules Management**: Set up custom rules to monitor system metrics dynamically. Name your rules, assign thresholds, and easily stop them when no longer needed.
 - **Full Operator Support**: Alert operators include `>`, `<`, `==`, `>=`, `<=` for flexible threshold conditions.
-- **Rule Persistence & Background Daemon**: Alert rules are automatically saved (`rules.json`) and monitored by an independent, invisible background daemon. Your alerts keep running and logging even after you close the dashboard!
+- **Rule Persistence & Background Daemon**: Alert rules are automatically saved (`rules.json` in the XDG state directory) and monitored by an independent, invisible background daemon. Your alerts keep running and logging even after you close the dashboard!
 - **Dedicated Rule Logs**: Every alert rule gets its own dedicated `<rule_name>.log` file.
 - **Real-Time Interactive Dashboard**: A minimalist, beautifully designed TUI (Terminal User Interface) showing live metrics using Textual.
 - **Command History**: Cycle through previously used commands using the Up and Down arrow keys.
@@ -83,7 +83,7 @@ You can set up background alert rules that monitor specific metrics and trigger 
 | `stop rule <name>` | Stops an active rule by its custom name | `stop rule my_mem_rule` |
 
 **Operators:** `>`, `<`,`==`,`>=`,`<=`
-*Note: The only action currently supported is `log` (writes to a dedicated `<rule_name>.log` file in the project directory, and triggers a terminal beep).*
+*Note: The only action currently supported is `log` (writes to a dedicated `<rule_name>.log` file under the state directory — `$XDG_STATE_HOME/nano-dsl/logs/`, or `~/.local/state/nano-dsl/logs/` by default — and triggers a terminal beep).*
 
 ---
 

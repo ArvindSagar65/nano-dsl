@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nano-dsl"
+version = "0.1.0"
+description = "A lightweight terminal-based system monitoring dashboard with a custom DSL for querying system metrics and managing alert rules."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+dependencies = [
+    "textual>=0.58.0",
+    "psutil>=5.9.0",
+    "lark>=1.2.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "mypy", "ruff"]
+
+[project.scripts]
+nano-dsl = "nano_logic.dashboard:main"
+
+[tool.setuptools.packages.find]
+include = ["nano_logic*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "E501",  # line length is enforced loosely via tool.ruff.line-length, not as a hard error
+]
+
+[tool.mypy]
+python_version = "3.8"
+warn_unused_ignores = true
+warn_redundant_casts = true
+check_untyped_defs = true
+# The codebase already carries fairly consistent type hints (see
+# `from __future__ import annotations` throughout), but nothing has ever
+# enforced them — start permissive and tighten incrementally rather than
+# requiring a big-bang annotation pass to get a clean run.
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false

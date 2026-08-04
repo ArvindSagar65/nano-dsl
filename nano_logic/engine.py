@@ -4,11 +4,15 @@ import os
 import time
 import psutil
 from dataclasses import asdict
+from nano_logic.logging_config import configure_logging
 from nano_logic.models import Rule
+from nano_logic.paths import get_rules_file
+
+logger = configure_logging(__name__)
 
 # Master list of all running rules
 ACTIVE_RULES: list[Rule] = []
-RULES_FILE = "rules.json"
+RULES_FILE = get_rules_file()
 
 # ──────────────────────────────────────────────
 #  Persistence
@@ -19,22 +23,22 @@ def save_rules() -> None:
     try:
         with open(RULES_FILE, "w") as f:
             json.dump([asdict(r) for r in ACTIVE_RULES], f, indent=4)
-    except Exception:
-        pass  # Running in background — don't corrupt TUI
+    except OSError:
+        logger.exception("Failed to save rules to %s", RULES_FILE)
 
 
 def load_rules() -> None:
     """Load ACTIVE_RULES from a JSON file."""
     global ACTIVE_RULES
-    if not os.path.exists(RULES_FILE):
+    if not RULES_FILE.exists():
         return
     try:
-        with open(RULES_FILE, "r") as f:
+        with open(RULES_FILE) as f:
             data = json.load(f)
             ACTIVE_RULES.clear()
             ACTIVE_RULES.extend([Rule(**r) for r in data])
-    except Exception:
-        pass
+    except (OSError, json.JSONDecodeError, TypeError):
+        logger.exception("Failed to load rules from %s", RULES_FILE)
 
 # ──────────────────────────────────────────────
 #  Metric fetching — single source of truth
@@ -147,15 +151,37 @@ _OPERATORS = {
     "<=": lambda v, t: v <= t,   # ← FIXED: was missing
 }
 
+# Once a rule fires, suppress repeat firings for this long. Without this,
+# a persistently-breached rule (e.g. a full disk) re-fires every
+# evaluation tick forever, flooding its log file and ringing the bell
+# once per second indefinitely.
+DEFAULT_ALERT_COOLDOWN_SECONDS = 60.0
 
-def evaluate_active_rules() -> list[tuple[Rule, float]]:
+# Per-rule-id timestamp of the last time it fired. Cleared for a rule
+# once its condition stops being breached, so it re-arms immediately
+# rather than staying suppressed until an old cooldown window lapses.
+_last_triggered_at: dict[int, float] = {}
+
+
+def evaluate_active_rules(cooldown_seconds: float = DEFAULT_ALERT_COOLDOWN_SECONDS) -> list[tuple[Rule, float]]:
     """
     Evaluate all rules in ACTIVE_RULES against current metric values.
-    Returns a list of (Rule, current_value) tuples for every breached rule.
+    Returns a list of (Rule, current_value) tuples for every breached rule
+    that hasn't already fired within the cooldown window.
     """
+    now = time.time()
     triggered = []
+    # Fetch each distinct metric at most once per tick. Some metrics (e.g.
+    # cpu.util, via psutil.cpu_percent(interval=None)) measure "since the
+    # last time this was called" — calling fetch_metric_value() separately
+    # per rule meant the second/third rule watching the same metric in one
+    # tick measured a near-zero elapsed slice and got quantized garbage
+    # (0%, 50%, 100%) instead of a real reading.
+    metric_values: dict[str, float | None] = {}
     for rule in ACTIVE_RULES:
-        current_val = fetch_metric_value(rule.metric)
+        if rule.metric not in metric_values:
+            metric_values[rule.metric] = fetch_metric_value(rule.metric)
+        current_val = metric_values[rule.metric]
         if current_val is None:
             continue
 
@@ -163,8 +189,16 @@ def evaluate_active_rules() -> list[tuple[Rule, float]]:
         if op_fn is None:
             continue  # unknown operator, skip
 
-        if op_fn(current_val, rule.threshold):
-            triggered.append((rule, current_val))
+        if not op_fn(current_val, rule.threshold):
+            _last_triggered_at.pop(rule.id, None)
+            continue
+
+        last_fired = _last_triggered_at.get(rule.id, 0.0)
+        if now - last_fired < cooldown_seconds:
+            continue
+
+        _last_triggered_at[rule.id] = now
+        triggered.append((rule, current_val))
 
     return triggered
 
@@ -173,12 +207,39 @@ def evaluate_active_rules() -> list[tuple[Rule, float]]:
 #  Rule management
 # ──────────────────────────────────────────────
 
+def add_rule(rule: Rule) -> Rule:
+    """Assign a unique id (and a default name, if none was given), register the
+    rule, and persist it. Centralizes rule creation so id assignment isn't
+    duplicated by every caller — previously the dashboard tracked its own
+    `rule_counter` independent of engine state, with no shared invariant
+    that ids stay unique.
+    """
+    rule.id = max((r.id for r in ACTIVE_RULES), default=0) + 1
+    if not rule.name:
+        rule.name = f"rule_{rule.id}"
+    ACTIVE_RULES.append(rule)
+    save_rules()
+    return rule
+
+
 def remove_rule(identifier: str) -> bool:
-    """Remove a rule by its ID (as string) or name. Returns True if removed."""
+    """Remove a rule by its ID (as string) or name. Returns True if removed.
+
+    An id match takes priority over a name match, so a rule whose name
+    happens to be an all-digit string (e.g. "3") can't shadow removal of
+    the rule whose actual id is 3.
+    """
     global ACTIVE_RULES
     for i, rule in enumerate(ACTIVE_RULES):
-        if str(rule.id) == identifier or rule.name == identifier:
+        if str(rule.id) == identifier:
             ACTIVE_RULES.pop(i)
+            _last_triggered_at.pop(rule.id, None)
+            save_rules()
+            return True
+    for i, rule in enumerate(ACTIVE_RULES):
+        if rule.name == identifier:
+            ACTIVE_RULES.pop(i)
+            _last_triggered_at.pop(rule.id, None)
             save_rules()
             return True
     return False

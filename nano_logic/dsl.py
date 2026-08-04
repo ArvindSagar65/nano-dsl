@@ -11,6 +11,12 @@ from lark.exceptions import LarkError
 from lark.tree import Tree
 from nano_logic.models import Rule, StopRule
 from nano_logic.engine import ACTIVE_RULES
+from nano_logic.monitoring.probes import (
+    get_all_processes,
+    get_process_by_name,
+    get_top_processes_by_cpu,
+    get_top_processes_by_memory,
+)
 
 DSL_GRAMMAR = r"""
 ?start: rule | command | rule_cmd
@@ -31,7 +37,7 @@ OPERATOR: ">" | "<" | "==" | ">=" | "<="
 ACTION: /[a-zA-Z_]+/
 
 # ── Commands organized by namespace ──
-?command: cpu_cmd | mem_cmd | disk_cmd | gpu_cmd | proc_cmd 
+?command: cpu_cmd | mem_cmd | disk_cmd | gpu_cmd | proc_cmd
         | net_cmd | sys_cmd | sensor_cmd | docker_cmd | service_cmd
         | utility_cmd
 
@@ -78,8 +84,8 @@ sensor_cmd: "sensor" "." "temp"    -> sensor_temp
           | "sensor" "." "fans"    -> sensor_fans
           | "sensor" "." "battery" -> sensor_battery
 
-docker_cmd: "docker" "ps"      -> docker_ps
-          | "docker" "stats"   -> docker_stats
+docker_cmd: "docker" "." "ps"      -> docker_ps
+          | "docker" "." "stats"   -> docker_stats
 
 service_cmd: "service" "." "list"          -> service_list
            | "service" "." "status" CMD    -> service_status
@@ -175,14 +181,7 @@ class MetricsTransformer(Transformer):
 
     def cpu_top(self, _children: list) -> str:
         try:
-            processes = []
-            for proc in psutil.process_iter(["pid", "name", "cpu_percent"]):
-                try:
-                    processes.append((proc.info["pid"], proc.info["name"], proc.cpu_percent()))
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-            processes.sort(key=lambda x: x[2], reverse=True)
-            top5 = processes[:5]
+            top5 = get_top_processes_by_cpu(limit=5)
             result = "Top 5 CPU Processes:\n"
             for pid, name, cpu in top5:
                 result += f"  {pid:6d} | {name:20s} | {cpu:6.1f}%\n"
@@ -231,14 +230,7 @@ class MetricsTransformer(Transformer):
 
     def mem_top(self, _children: list) -> str:
         try:
-            processes = []
-            for proc in psutil.process_iter(["pid", "name", "memory_percent"]):
-                try:
-                    processes.append((proc.info["pid"], proc.info["name"], proc.memory_percent()))
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-            processes.sort(key=lambda x: x[2], reverse=True)
-            top5 = processes[:5]
+            top5 = get_top_processes_by_memory(limit=5)
             result = "Top 5 Memory Processes:\n"
             for pid, name, mem in top5:
                 result += f"  {pid:6d} | {name:20s} | {mem:6.1f}%\n"
@@ -248,10 +240,11 @@ class MetricsTransformer(Transformer):
 
     def mem_cached(self, _children: list) -> str:
         mem = psutil.virtual_memory()
+        buffers_gib = _format_gib(getattr(mem, "buffers", 0))
         return (
             "Memory Cached/Buffers: "
             f"cached={_format_gib(mem.cached):.2f}GiB, "
-            f"buffers={_format_gib(mem.buffers) if hasattr(mem, 'buffers') else 0:.2f}GiB"
+            f"buffers={buffers_gib:.2f}GiB"
         )
 
     # ── Disk ──
@@ -319,18 +312,12 @@ class MetricsTransformer(Transformer):
     # ── Process ──
     def proc_list(self, _children: list) -> str:
         try:
-            processes = []
-            for proc in psutil.process_iter(["pid", "name", "status"]):
-                try:
-                    processes.append((proc.info["pid"], proc.info["name"], proc.info["status"]))
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-            processes.sort(key=lambda x: x[0])
+            processes = sorted(get_all_processes(), key=lambda p: p["pid"])
             result = f"Total Processes: {len(processes)}\n"
             result += "PID     | Name\n"
             result += "--------|----\n"
-            for pid, name, _ in processes[:20]:
-                result += f"{pid:7d} | {name[:30]:30s}\n"
+            for p in processes[:20]:
+                result += f"{p['pid']:7d} | {p['name'][:30]:30s}\n"
             if len(processes) > 20:
                 result += f"... and {len(processes) - 20} more"
             return result.strip()
@@ -353,19 +340,13 @@ class MetricsTransformer(Transformer):
 
     def proc_search(self, children: list) -> str:
         """Search for processes by name substring."""
-        name = str(children[0]).lower()
-        matches = []
-        for proc in psutil.process_iter(["pid", "name", "status"]):
-            try:
-                if name in proc.info["name"].lower():
-                    matches.append((proc.info["pid"], proc.info["name"], proc.info["status"]))
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
+        name = str(children[0])
+        matches = get_process_by_name(name)
         if not matches:
             return f"No processes found matching '{name}'"
         result = f"Processes matching '{name}':\n"
-        for pid, pname, status in matches:
-            result += f"  {pid:7d} | {pname:30s} | {status}\n"
+        for m in matches:
+            result += f"  {m['pid']:7d} | {m['name']:30s} | {m['status']}\n"
         return result.strip()
 
     def proc_tree(self, _children: list) -> str:
@@ -616,7 +597,7 @@ class MetricsTransformer(Transformer):
             "  Network:    net.interfaces, net.bandwidth, net.connections, net.ports, net.dns <host>\n"
             "  System:     system.uptime, system.info, system.processes, system.users, system.load\n"
             "  Sensors:    sensor.temp, sensor.fans, sensor.battery\n"
-            "  Docker:     docker ps, docker stats\n"
+            "  Docker:     docker.ps, docker.stats\n"
             "  Services:   service.list, service.status <name>\n"
             "  Utility:    clear, help, rules, status, history, guide\n\n"
             "  Alerts:     <name>: alert <metric> <op> <val> -> <action>\n"
