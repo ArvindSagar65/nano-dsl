@@ -364,6 +364,36 @@ class TestEngine:
         finally:
             _last_triggered_at.pop(2, None)
 
+    def test_evaluate_active_rules_fetches_shared_metric_only_once_per_tick(self):
+        """Multiple rules watching the same metric must only fetch it once per
+        tick. Fetching per-rule caused wrong readings for "since last call"
+        metrics like psutil.cpu_percent(interval=None): a second call
+        microseconds after the first measures a near-zero elapsed slice and
+        Linux's clock-tick accounting quantizes that into garbage (0/50/100%)
+        instead of a real value.
+        """
+        from nano_logic.engine import _METRIC_REGISTRY, _last_triggered_at
+
+        call_count = {"n": 0}
+
+        def fake_metric():
+            call_count["n"] += 1
+            return 42.0
+
+        _METRIC_REGISTRY["test.shared_metric"] = fake_metric
+        r1 = Rule(metric="test.shared_metric", operator=">", threshold=1, action="log", id=101)
+        r2 = Rule(metric="test.shared_metric", operator=">", threshold=1, action="log", id=102)
+        ACTIVE_RULES.extend([r1, r2])
+        try:
+            triggered = evaluate_active_rules(cooldown_seconds=60.0)
+            assert call_count["n"] == 1, "shared metric was fetched more than once in a single tick"
+            assert {r.id for r, _ in triggered} == {101, 102}
+            assert all(val == 42.0 for _, val in triggered)
+        finally:
+            del _METRIC_REGISTRY["test.shared_metric"]
+            _last_triggered_at.pop(101, None)
+            _last_triggered_at.pop(102, None)
+
     @pytest.mark.parametrize("operator", [">", "<", "==", ">=", "<="])
     def test_all_operators_in_engine(self, operator):
         """Verify that all operators exist in the engine's operator map."""

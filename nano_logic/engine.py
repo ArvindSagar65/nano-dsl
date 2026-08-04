@@ -171,8 +171,17 @@ def evaluate_active_rules(cooldown_seconds: float = DEFAULT_ALERT_COOLDOWN_SECON
     """
     now = time.time()
     triggered = []
+    # Fetch each distinct metric at most once per tick. Some metrics (e.g.
+    # cpu.util, via psutil.cpu_percent(interval=None)) measure "since the
+    # last time this was called" — calling fetch_metric_value() separately
+    # per rule meant the second/third rule watching the same metric in one
+    # tick measured a near-zero elapsed slice and got quantized garbage
+    # (0%, 50%, 100%) instead of a real reading.
+    metric_values: dict[str, float | None] = {}
     for rule in ACTIVE_RULES:
-        current_val = fetch_metric_value(rule.metric)
+        if rule.metric not in metric_values:
+            metric_values[rule.metric] = fetch_metric_value(rule.metric)
+        current_val = metric_values[rule.metric]
         if current_val is None:
             continue
 
