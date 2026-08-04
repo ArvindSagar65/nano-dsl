@@ -198,11 +198,37 @@ def evaluate_active_rules(cooldown_seconds: float = DEFAULT_ALERT_COOLDOWN_SECON
 #  Rule management
 # ──────────────────────────────────────────────
 
+def add_rule(rule: Rule) -> Rule:
+    """Assign a unique id (and a default name, if none was given), register the
+    rule, and persist it. Centralizes rule creation so id assignment isn't
+    duplicated by every caller — previously the dashboard tracked its own
+    `rule_counter` independent of engine state, with no shared invariant
+    that ids stay unique.
+    """
+    rule.id = max((r.id for r in ACTIVE_RULES), default=0) + 1
+    if not rule.name:
+        rule.name = f"rule_{rule.id}"
+    ACTIVE_RULES.append(rule)
+    save_rules()
+    return rule
+
+
 def remove_rule(identifier: str) -> bool:
-    """Remove a rule by its ID (as string) or name. Returns True if removed."""
+    """Remove a rule by its ID (as string) or name. Returns True if removed.
+
+    An id match takes priority over a name match, so a rule whose name
+    happens to be an all-digit string (e.g. "3") can't shadow removal of
+    the rule whose actual id is 3.
+    """
     global ACTIVE_RULES
     for i, rule in enumerate(ACTIVE_RULES):
-        if str(rule.id) == identifier or rule.name == identifier:
+        if str(rule.id) == identifier:
+            ACTIVE_RULES.pop(i)
+            _last_triggered_at.pop(rule.id, None)
+            save_rules()
+            return True
+    for i, rule in enumerate(ACTIVE_RULES):
+        if rule.name == identifier:
             ACTIVE_RULES.pop(i)
             _last_triggered_at.pop(rule.id, None)
             save_rules()

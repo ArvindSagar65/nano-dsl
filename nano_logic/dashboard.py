@@ -15,7 +15,7 @@ from textual.widgets import Input, Log, Static
 from textual import events
 from nano_logic.dsl import execute_command
 from nano_logic.models import Rule, StopRule
-from nano_logic.engine import evaluate_active_rules, ACTIVE_RULES, remove_rule, load_rules, save_rules
+from nano_logic.engine import ACTIVE_RULES, add_rule, remove_rule, load_rules
 from nano_logic.logging_config import configure_logging
 from nano_logic.monitoring.probes import (
     get_disk_free_bytes,
@@ -119,7 +119,6 @@ class SystemDashboardApp(App[None]):
     command_history: list[str]
     commands_typed: list[str]
     history_index: int
-    rule_counter: int
 
     def __init__(self) -> None:
         super().__init__()
@@ -132,7 +131,6 @@ class SystemDashboardApp(App[None]):
         ]
         self.commands_typed = []
         self.history_index = -1
-        self.rule_counter = 0
 
     def compose(self) -> ComposeResult:
         """Build the app layout."""
@@ -169,8 +167,6 @@ class SystemDashboardApp(App[None]):
             logger.exception("Failed to spawn background daemon")
 
         load_rules()
-        if ACTIVE_RULES:
-            self.rule_counter = max(r.id for r in ACTIVE_RULES)
         self.update_rules_panel()
         self.refresh_metrics()
         self.run_worker(self._metrics_loop(), name="metrics-loop", exclusive=True)
@@ -290,12 +286,7 @@ class SystemDashboardApp(App[None]):
             result = execute_command(command_text)
 
             if isinstance(result, Rule):
-                self.rule_counter += 1
-                result.id = self.rule_counter
-                if not result.name:
-                    result.name = f"rule_{result.id}"
-                ACTIVE_RULES.append(result)
-                save_rules()
+                add_rule(result)
                 self._append_console(
                     f"✅ Rule '{result.name}' (ID: {result.id}) activated: "
                     f"Monitor {result.metric} {result.operator} {result.threshold}"
@@ -306,7 +297,8 @@ class SystemDashboardApp(App[None]):
                     with open(get_logs_dir() / f"{result.name}.log", "a") as f:
                         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         f.write(f"[{timestamp}] --- Rule '{result.name}' Activated ---\n")
-                except Exception as e:
+                except OSError as e:
+                    logger.exception("Failed to create log file for rule '%s'", result.name)
                     self._append_console(f"⚠️ Error creating log file for '{result.name}': {e}")
 
             elif isinstance(result, StopRule):

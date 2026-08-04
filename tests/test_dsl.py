@@ -279,6 +279,34 @@ class TestEngine:
     def test_remove_nonexistent_rule(self):
         assert remove_rule("nonexistent") is False
 
+    def test_add_rule_assigns_unique_incrementing_ids(self):
+        from nano_logic.engine import add_rule
+
+        r1 = add_rule(execute_command("alert cpu.util > 80 -> log"))
+        r2 = add_rule(execute_command("alert mem.util > 80 -> log"))
+        assert r1.id != r2.id
+        assert r2.id == r1.id + 1
+
+    def test_add_rule_survives_gaps_from_removed_rules(self):
+        """New ids should never collide with an existing rule's id, even after removals."""
+        from nano_logic.engine import add_rule
+
+        r1 = add_rule(execute_command("alert cpu.util > 80 -> log"))
+        r2 = add_rule(execute_command("alert mem.util > 80 -> log"))
+        remove_rule(str(r1.id))
+        r3 = add_rule(execute_command("alert disk.free < 5 -> log"))
+        assert r3.id not in {r1.id, r2.id}
+
+    def test_remove_rule_id_match_takes_priority_over_name_match(self):
+        """A rule named the same as another rule's id shouldn't shadow the id-based removal."""
+        by_id = Rule(metric="cpu.util", operator=">", threshold=1, action="log", id=7, name="seven")
+        by_name = Rule(metric="mem.util", operator=">", threshold=1, action="log", id=99, name="7")
+        ACTIVE_RULES.extend([by_id, by_name])
+
+        assert remove_rule("7") is True
+        assert by_id not in ACTIVE_RULES
+        assert by_name in ACTIVE_RULES
+
     def test_evaluate_no_crash(self):
         """evaluate_active_rules should never crash even with no rules."""
         alerts = evaluate_active_rules()
