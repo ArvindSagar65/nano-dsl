@@ -1,7 +1,7 @@
 """Comprehensive test suite for Nano-DSL grammar and engine."""
 import pytest
 from lark.exceptions import LarkError, UnexpectedInput
-from nano_logic.dsl import execute_command, parse_command, DSL_GRAMMAR, parser
+from nano_logic.dsl import execute_command, parse_command
 from nano_logic.models import Rule, StopRule
 from nano_logic.engine import (
     ACTIVE_RULES, save_rules, load_rules, remove_rule,

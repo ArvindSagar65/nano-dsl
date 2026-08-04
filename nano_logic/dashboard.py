@@ -2,7 +2,6 @@
 from __future__ import annotations
 import asyncio
 import textwrap
-from collections import deque
 from datetime import datetime
 import psutil
 import subprocess
@@ -171,7 +170,6 @@ class SystemDashboardApp(App[None]):
         self.refresh_metrics()
         self.run_worker(self._metrics_loop(), name="metrics-loop", exclusive=True)
 
-        command_log = self.query_one("#command-panel", Log)
         for line in self.command_history:
             self._write_console_wrapped(line)
         self.query_one("#command-input", Input).focus()

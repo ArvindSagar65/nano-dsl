@@ -37,7 +37,7 @@ OPERATOR: ">" | "<" | "==" | ">=" | "<="
 ACTION: /[a-zA-Z_]+/
 
 # ── Commands organized by namespace ──
-?command: cpu_cmd | mem_cmd | disk_cmd | gpu_cmd | proc_cmd 
+?command: cpu_cmd | mem_cmd | disk_cmd | gpu_cmd | proc_cmd
         | net_cmd | sys_cmd | sensor_cmd | docker_cmd | service_cmd
         | utility_cmd
 

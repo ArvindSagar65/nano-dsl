@@ -5,7 +5,6 @@ they read a metric and return it, no formatting or display logic.
 """
 from __future__ import annotations
 import os
-import time
 import socket
 import subprocess
 import psutil

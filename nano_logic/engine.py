@@ -33,7 +33,7 @@ def load_rules() -> None:
     if not RULES_FILE.exists():
         return
     try:
-        with open(RULES_FILE, "r") as f:
+        with open(RULES_FILE) as f:
             data = json.load(f)
             ACTIVE_RULES.clear()
             ACTIVE_RULES.extend([Rule(**r) for r in data])
