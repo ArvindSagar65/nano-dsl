@@ -114,6 +114,45 @@ def get_process_count() -> int:
         return 0
 
 
+def get_all_processes() -> list[dict]:
+    """Return {pid, name, status} for every running process."""
+    processes = []
+    for proc in psutil.process_iter(["pid", "name", "status"]):
+        try:
+            processes.append({
+                "pid": proc.info["pid"],
+                "name": proc.info["name"],
+                "status": proc.info["status"],
+            })
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    return processes
+
+
+def get_top_processes_by_cpu(limit: int = 5) -> list[tuple[int, str, float]]:
+    """Return the top `limit` processes by CPU percent, as (pid, name, cpu_percent)."""
+    processes = []
+    for proc in psutil.process_iter(["pid", "name", "cpu_percent"]):
+        try:
+            processes.append((proc.info["pid"], proc.info["name"], proc.cpu_percent()))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    processes.sort(key=lambda p: p[2], reverse=True)
+    return processes[:limit]
+
+
+def get_top_processes_by_memory(limit: int = 5) -> list[tuple[int, str, float]]:
+    """Return the top `limit` processes by memory percent, as (pid, name, memory_percent)."""
+    processes = []
+    for proc in psutil.process_iter(["pid", "name", "memory_percent"]):
+        try:
+            processes.append((proc.info["pid"], proc.info["name"], proc.memory_percent()))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    processes.sort(key=lambda p: p[2], reverse=True)
+    return processes[:limit]
+
+
 def get_process_by_name(name: str) -> list[dict]:
     """Search processes by name substring. Returns list of {pid, name, status}."""
     matches = []
