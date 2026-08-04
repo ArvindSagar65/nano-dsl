@@ -130,6 +130,12 @@ class SystemDashboardApp(App[None]):
         ]
         self.commands_typed = []
         self.history_index = -1
+        # Byte offset already read in each rule's log file, keyed by rule
+        # id. The daemon is a separate process and the only thing that
+        # evaluates rules, so tailing the log file it writes is how the
+        # dashboard learns a rule fired — there's no other channel between
+        # the two beyond the files they both read/write.
+        self._alert_log_offsets: dict[int, int] = {}
 
     def compose(self) -> ComposeResult:
         """Build the app layout."""
@@ -178,7 +184,58 @@ class SystemDashboardApp(App[None]):
         """Refresh system values every second."""
         while True:
             self.refresh_metrics()
+            self._check_for_new_alerts()
             await asyncio.sleep(1)
+
+    def _check_for_new_alerts(self) -> None:
+        """Surface alert lines the daemon has written since the last tick.
+
+        Reads only the bytes appended to each active rule's log file since
+        it was last checked, so this stays cheap regardless of how large
+        the log grows.
+        """
+        active_ids = set()
+        for rule in ACTIVE_RULES:
+            active_ids.add(rule.id)
+            log_path = get_logs_dir() / f"{rule.name}.log"
+
+            if rule.id not in self._alert_log_offsets:
+                # First time seeing this rule this session — start from the
+                # current end of file so we don't replay alerts that fired
+                # before the dashboard started watching it.
+                self._alert_log_offsets[rule.id] = log_path.stat().st_size if log_path.exists() else 0
+                continue
+
+            if not log_path.exists():
+                continue
+
+            try:
+                size = log_path.stat().st_size
+                offset = self._alert_log_offsets[rule.id]
+                if size < offset:
+                    offset = 0  # log was rotated/truncated — restart from the top
+                if size == offset:
+                    continue
+                with open(log_path) as f:
+                    f.seek(offset)
+                    new_content = f.read()
+                self._alert_log_offsets[rule.id] = size
+            except OSError:
+                logger.exception("Failed to tail alert log for rule '%s'", rule.name)
+                continue
+
+            for line in new_content.splitlines():
+                if "[ALERT]" not in line:
+                    continue
+                # Log lines are already timestamped ("[HH:MM:SS] message");
+                # drop that prefix since _append_console adds its own.
+                _, _, message = line.partition("] ")
+                self._append_console(f"{rule.name}: {message or line}")
+                self.bell()
+
+        # Stop tracking rules that were removed or renamed.
+        for stale_id in set(self._alert_log_offsets) - active_ids:
+            del self._alert_log_offsets[stale_id]
 
     def refresh_metrics(self) -> None:
         """Read system metrics and update the UI panels."""

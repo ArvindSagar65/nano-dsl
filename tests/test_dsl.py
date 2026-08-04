@@ -483,3 +483,80 @@ class TestProbes:
     def test_logged_in_users(self):
         users = probes.get_logged_in_users()
         assert isinstance(users, list)
+
+
+# ═══════════════════════════════════════════════
+#  7. DASHBOARD — alert notification tailing
+# ═══════════════════════════════════════════════
+
+class TestDashboardAlertNotifications:
+    """The dashboard runs in a separate process from the daemon that
+    actually evaluates rules, so it learns a rule fired by tailing that
+    rule's own log file. Driven directly with asyncio.run() around
+    App.run_test() rather than pytest-asyncio, which isn't a dependency."""
+
+    def setup_method(self):
+        ACTIVE_RULES.clear()
+
+    def teardown_method(self):
+        ACTIVE_RULES.clear()
+
+    def test_new_alert_line_is_surfaced_in_console_and_rings_bell(self):
+        import asyncio
+        from nano_logic.dashboard import SystemDashboardApp
+        from nano_logic.paths import get_logs_dir
+
+        async def scenario():
+            rule = Rule(metric="cpu.util", operator=">", threshold=1, action="log", id=1, name="bell_test_rule")
+            ACTIVE_RULES.append(rule)
+            log_path = get_logs_dir() / f"{rule.name}.log"
+            log_path.write_text("[00:00:00] --- Rule 'bell_test_rule' Activated ---\n")
+
+            app = SystemDashboardApp()
+            try:
+                async with app.run_test():
+                    # First poll only seeds the read offset — it must not
+                    # replay the pre-existing "Activated" line as an alert.
+                    app._check_for_new_alerts()
+                    assert not any("ALERT" in line for line in app.command_history)
+
+                    with open(log_path, "a") as f:
+                        f.write("[00:00:05] \U0001f6a8 [ALERT] cpu.util reached 42.0 (Rule: > 1.0)\n")
+
+                    rung = []
+                    app.bell = lambda: rung.append(True)  # headless bell() is a no-op; observe the call instead
+                    app._check_for_new_alerts()
+
+                    console_text = "\n".join(app.command_history)
+                    assert "bell_test_rule" in console_text
+                    assert "42.0" in console_text
+                    assert rung, "bell() was not called for a newly-fired alert"
+            finally:
+                log_path.unlink(missing_ok=True)
+
+        asyncio.run(scenario())
+
+    def test_removed_rule_stops_being_tracked(self):
+        import asyncio
+        from nano_logic.dashboard import SystemDashboardApp
+        from nano_logic.paths import get_logs_dir
+
+        async def scenario():
+            rule = Rule(metric="cpu.util", operator=">", threshold=1, action="log", id=2, name="untracked_rule")
+            ACTIVE_RULES.append(rule)
+            log_path = get_logs_dir() / f"{rule.name}.log"
+            log_path.write_text("[00:00:00] --- Rule 'untracked_rule' Activated ---\n")
+
+            app = SystemDashboardApp()
+            try:
+                async with app.run_test():
+                    app._check_for_new_alerts()
+                    assert rule.id in app._alert_log_offsets
+
+                    ACTIVE_RULES.remove(rule)
+                    app._check_for_new_alerts()
+                    assert rule.id not in app._alert_log_offsets
+            finally:
+                log_path.unlink(missing_ok=True)
+
+        asyncio.run(scenario())
