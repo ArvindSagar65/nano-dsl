@@ -163,10 +163,27 @@ class TestCommandExecution:
         # PID 1 should exist on any Unix system
         assert "Process Info" in result or "not found" in result
 
-    def test_net_dns_returns_string(self):
+    def test_net_dns_returns_string(self, monkeypatch):
+        """Mocked so this test doesn't depend on outbound DNS actually working —
+        this project explicitly targets offline/firewalled homelab environments."""
+        monkeypatch.setattr(
+            "socket.gethostbyname_ex",
+            lambda host: (host, [], ["93.184.216.34"]),
+        )
         result = execute_command("net.dns google.com")
         assert isinstance(result, str)
-        assert "google.com" in result.lower() or "Error" in result
+        assert "google.com" in result.lower()
+
+    def test_net_dns_handles_lookup_failure(self, monkeypatch):
+        import socket as socket_module
+
+        def raise_gaierror(host):
+            raise socket_module.gaierror("Name or service not known")
+
+        monkeypatch.setattr("socket.gethostbyname_ex", raise_gaierror)
+        result = execute_command("net.dns nonexistent.invalid")
+        assert isinstance(result, str)
+        assert "nonexistent.invalid" in result
 
     def test_docker_commands_graceful(self):
         """Docker may not be installed — should not crash."""
