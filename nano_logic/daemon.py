@@ -6,6 +6,7 @@ import sys
 from datetime import datetime
 
 from nano_logic.engine import evaluate_active_rules, load_rules, RULES_FILE
+from nano_logic.paths import get_logs_dir
 
 def run_daemon():
     last_mtime = 0
@@ -13,8 +14,8 @@ def run_daemon():
     while True:
         try:
             # Reload rules if the JSON file has been modified by the dashboard
-            if os.path.exists(RULES_FILE):
-                mtime = os.path.getmtime(RULES_FILE)
+            if RULES_FILE.exists():
+                mtime = RULES_FILE.stat().st_mtime
                 if mtime > last_mtime:
                     load_rules()
                     last_mtime = mtime
@@ -25,8 +26,7 @@ def run_daemon():
                 
                 # Write to rule-specific log file
                 try:
-                    os.makedirs("logs", exist_ok=True)
-                    with open(f"logs/{rule.name}.log", "a") as f:
+                    with open(get_logs_dir() / f"{rule.name}.log", "a") as f:
                         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         f.write(f"[{timestamp}] {msg}\n")
                 except Exception:

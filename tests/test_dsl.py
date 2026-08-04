@@ -308,9 +308,9 @@ class TestEngine:
         load_rules()
         assert len(ACTIVE_RULES) >= 1
         # Clean up
-        import os
-        if os.path.exists("rules.json"):
-            os.remove("rules.json")
+        from nano_logic.engine import RULES_FILE
+        if RULES_FILE.exists():
+            RULES_FILE.unlink()
 
 
 # ═══════════════════════════════════════════════

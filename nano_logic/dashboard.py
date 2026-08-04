@@ -21,6 +21,7 @@ from nano_logic.monitoring.probes import (
     get_disk_usage_percent,
     get_net_totals_mib,
 )
+from nano_logic.paths import get_logs_dir
 from nano_logic.ui.guide import render_guide
 
 
@@ -303,9 +304,7 @@ class SystemDashboardApp(App[None]):
                 self.update_rules_panel()
                 # Initialize the log file for this specific rule
                 try:
-                    import os
-                    os.makedirs("logs", exist_ok=True)
-                    with open(f"logs/{result.name}.log", "a") as f:
+                    with open(get_logs_dir() / f"{result.name}.log", "a") as f:
                         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         f.write(f"[{timestamp}] --- Rule '{result.name}' Activated ---\n")
                 except Exception as e:

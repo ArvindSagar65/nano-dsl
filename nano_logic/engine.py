@@ -5,10 +5,11 @@ import time
 import psutil
 from dataclasses import asdict
 from nano_logic.models import Rule
+from nano_logic.paths import get_rules_file
 
 # Master list of all running rules
 ACTIVE_RULES: list[Rule] = []
-RULES_FILE = "rules.json"
+RULES_FILE = get_rules_file()
 
 # ──────────────────────────────────────────────
 #  Persistence
@@ -26,7 +27,7 @@ def save_rules() -> None:
 def load_rules() -> None:
     """Load ACTIVE_RULES from a JSON file."""
     global ACTIVE_RULES
-    if not os.path.exists(RULES_FILE):
+    if not RULES_FILE.exists():
         return
     try:
         with open(RULES_FILE, "r") as f:
