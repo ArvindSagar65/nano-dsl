@@ -5,12 +5,21 @@ import os
 import sys
 from datetime import datetime
 
+from nano_logic.daemon_lock import acquire_daemon_lock
 from nano_logic.engine import evaluate_active_rules, load_rules, RULES_FILE
 from nano_logic.paths import get_logs_dir
 
 def run_daemon():
+    with acquire_daemon_lock() as acquired:
+        if not acquired:
+            # Another daemon instance already holds the lock — nothing to do.
+            return
+        _monitor_loop()
+
+
+def _monitor_loop():
     last_mtime = 0
-    
+
     while True:
         try:
             # Reload rules if the JSON file has been modified by the dashboard

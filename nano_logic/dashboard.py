@@ -152,20 +152,16 @@ class SystemDashboardApp(App[None]):
 
     def on_mount(self) -> None:
         """Start periodic async metric updates, load rules, and ensure daemon is running."""
-        # Ensure the background daemon is running
+        # Always attempt to spawn the daemon — it uses an flock()'d PID file
+        # to enforce a single instance, so a redundant spawn just exits
+        # immediately rather than racing with an already-running daemon.
         try:
-            daemon_running = False
-            for p in psutil.process_iter(["cmdline"]):
-                if p.info["cmdline"] and "daemon.py" in " ".join(p.info["cmdline"]):
-                    daemon_running = True
-                    break
-            if not daemon_running:
-                subprocess.Popen(
-                    [sys.executable, "-m", "nano_logic.daemon"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
+            subprocess.Popen(
+                [sys.executable, "-m", "nano_logic.daemon"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
         except Exception:
             pass
 
