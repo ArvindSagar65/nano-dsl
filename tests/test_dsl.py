@@ -531,10 +531,16 @@ class TestDashboardAlertNotifications:
     def teardown_method(self):
         ACTIVE_RULES.clear()
 
-    def test_new_alert_line_is_surfaced_in_console_and_rings_bell(self):
+    def test_new_alert_line_is_surfaced_in_console_and_rings_bell(self, monkeypatch):
         import asyncio
         from nano_logic.dashboard import SystemDashboardApp
         from nano_logic.paths import get_logs_dir
+
+        # on_mount() unconditionally spawns a real `nano_logic.daemon`
+        # subprocess. Left unpatched, every test that mounts the app leaks
+        # a real, permanently-running background process (it successfully
+        # acquires its own PID-file lock and never exits on its own).
+        monkeypatch.setattr("nano_logic.dashboard.subprocess.Popen", lambda *a, **k: None)
 
         async def scenario():
             rule = Rule(metric="cpu.util", operator=">", threshold=1, action="log", id=1, name="bell_test_rule")
@@ -566,10 +572,12 @@ class TestDashboardAlertNotifications:
 
         asyncio.run(scenario())
 
-    def test_removed_rule_stops_being_tracked(self):
+    def test_removed_rule_stops_being_tracked(self, monkeypatch):
         import asyncio
         from nano_logic.dashboard import SystemDashboardApp
         from nano_logic.paths import get_logs_dir
+
+        monkeypatch.setattr("nano_logic.dashboard.subprocess.Popen", lambda *a, **k: None)
 
         async def scenario():
             rule = Rule(metric="cpu.util", operator=">", threshold=1, action="log", id=2, name="untracked_rule")
