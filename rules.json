@@ -1,1 +1,10 @@
-[]
+[
+    {
+        "metric": "cpu.util",
+        "operator": ">",
+        "threshold": 5.0,
+        "action": "log",
+        "id": 3,
+        "name": "rule_3"
+    }
+]

@@ -1,0 +1,7 @@
+[2026-08-04 23:13:12] --- Rule 'rule_2' Activated ---
+[2026-08-04 23:13:38] 🚨 [ALERT] cpu.util reached 50.0 (Rule: > 2.0)
+[2026-08-04 23:13:41] 🚨 [ALERT] cpu.util reached 100.0 (Rule: > 2.0)
+[2026-08-04 23:14:10] 🚨 [ALERT] cpu.util reached 7.2 (Rule: > 2.0)
+[2026-08-04 23:14:11] 🚨 [ALERT] cpu.util reached 7.3 (Rule: > 2.0)
+[2026-08-04 23:14:12] 🚨 [ALERT] cpu.util reached 7.4 (Rule: > 2.0)
+[2026-08-04 23:14:13] 🚨 [ALERT] cpu.util reached 7.1 (Rule: > 2.0)

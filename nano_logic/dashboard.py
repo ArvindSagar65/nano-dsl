@@ -6,6 +6,7 @@ from datetime import datetime
 import psutil
 import subprocess
 import sys
+import shutil
 from lark.exceptions import LarkError
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -25,6 +26,37 @@ from nano_logic.paths import get_logs_dir
 from nano_logic.ui.guide import render_guide
 
 logger = configure_logging(__name__)
+
+
+def _copy_text_to_clipboard(text: str) -> None:
+    """Copy text to the system clipboard.
+
+    Tries `pyperclip` first, then falls back to `wl-copy` or `xclip` if available.
+    Raises a RuntimeError if no backend is found.
+    """
+    try:
+        import pyperclip
+
+        pyperclip.copy(text)
+        return
+    except Exception:
+        pass
+
+    # Try Wayland
+    if shutil.which("wl-copy"):
+        p = subprocess.Popen(["wl-copy"], stdin=subprocess.PIPE)
+        p.communicate(text.encode())
+        if p.returncode == 0:
+            return
+
+    # Try X11 xclip
+    if shutil.which("xclip"):
+        p = subprocess.Popen(["xclip", "-selection", "clipboard"], stdin=subprocess.PIPE)
+        p.communicate(text.encode())
+        if p.returncode == 0:
+            return
+
+    raise RuntimeError("No clipboard backend available (install pyperclip, wl-copy, or xclip)")
 
 
 class SystemDashboardApp(App[None]):
@@ -113,7 +145,11 @@ class SystemDashboardApp(App[None]):
     }
     """
 
-    BINDINGS = [Binding("q", "quit", "Quit")]
+    BINDINGS = [
+        Binding("q", "quit", "Quit"),
+        Binding("ctrl+shift+c", "copy_console", "Copy Console to Clipboard"),
+        Binding("f6", "copy_console", "Copy Console (Fallback)"),
+    ]
 
     command_history: list[str]
     commands_typed: list[str]
@@ -391,6 +427,19 @@ class SystemDashboardApp(App[None]):
         for r in ACTIVE_RULES:
             content += f"[{r.id}] {r.name}: alert {r.metric} {r.operator} {r.threshold} -> {r.action}\n"
         rules_widget.update(content.strip())
+
+    def action_copy_console(self) -> None:
+        """Copy the current console contents to the system clipboard.
+
+        Bound to `Ctrl+Shift+C`. Falls back to notifying the user on failure.
+        """
+        try:
+            text = "\n".join(self.command_history)
+            _copy_text_to_clipboard(text)
+            # Provide user feedback in the console
+            self._append_console("✅ Console copied to clipboard.")
+        except Exception as exc:  # pragma: no cover - runtime environment dependent
+            self._append_console(f"⚠️ Copy failed: {exc}")
 
     @staticmethod
     def _progress_bar(percent: float, width: int = 30) -> str:
