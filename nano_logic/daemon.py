@@ -40,7 +40,7 @@ def _monitor_loop():
 
                 # Write to rule-specific log file
                 try:
-                    with open(get_logs_dir() / f"{rule.name}.log", "a") as f:
+                    with open(get_logs_dir() / f"{rule.name}.log", "a", encoding="utf-8") as f:
                         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         f.write(f"[{timestamp}] {msg}\n")
                 except OSError:

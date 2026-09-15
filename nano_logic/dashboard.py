@@ -1,22 +1,26 @@
 """Textual terminal dashboard showing system metrics and logs."""
 from __future__ import annotations
+
 import asyncio
-import textwrap
-from datetime import datetime
-import psutil
+import os
+import shutil
 import subprocess
 import sys
-import shutil
+import textwrap
+from datetime import datetime
+
+import psutil
 from lark.exceptions import LarkError
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Input, Log, Static
-from textual import events
+
 from nano_logic.dsl import execute_command
-from nano_logic.models import Rule, StopRule
-from nano_logic.engine import ACTIVE_RULES, add_rule, remove_rule, load_rules
+from nano_logic.engine import ACTIVE_RULES, add_rule, load_rules, remove_rule
 from nano_logic.logging_config import configure_logging
+from nano_logic.models import Rule, StopRule
 from nano_logic.monitoring.probes import (
     get_disk_free_bytes,
     get_disk_usage_percent,
@@ -159,10 +163,10 @@ class SystemDashboardApp(App[None]):
         super().__init__()
         self.command_history = [
             "Command Console",
-            "Try: cpu.util | disk.free | net.ports | sensor.temp",
-            "Alerts: my_rule: alert cpu.util > 80 -> log",
-            "Utility: help | rules | status | clear",
-            "Type 'exit' to quit",
+            "Try: cpu.util | docker.ps | ec2.list | help",
+            "Alerts: my_rule: alert cpu.util > 80 -> log  |  actions: log, slack, discord, webhook",
+            "Web UI: nano-dsl --web   then open http://localhost:5000",
+            "Type 'exit' to quit (background rules keep running)",
         ]
         self.commands_typed = []
         self.history_index = -1
@@ -208,9 +212,22 @@ class SystemDashboardApp(App[None]):
             logger.exception("Failed to spawn background daemon")
 
         load_rules()
+        try:
+            psutil.cpu_percent(interval=None)
+        except Exception:
+            pass
         self.update_rules_panel()
         self.refresh_metrics()
         self.run_worker(self._metrics_loop(), name="metrics-loop", exclusive=True)
+
+        try:
+            from nano_logic.web import get_active_web_server
+
+            web_srv = get_active_web_server()
+            if web_srv and web_srv.is_running:
+                self._append_console(f"🌐 Web Dashboard active on http://localhost:{web_srv.port}")
+        except Exception:
+            pass
 
         for line in self.command_history:
             self._write_console_wrapped(line)
@@ -252,7 +269,7 @@ class SystemDashboardApp(App[None]):
                     offset = 0  # log was rotated/truncated — restart from the top
                 if size == offset:
                     continue
-                with open(log_path) as f:
+                with open(log_path, encoding="utf-8") as f:
                     f.seek(offset)
                     new_content = f.read()
                 self._alert_log_offsets[rule.id] = size
@@ -280,6 +297,7 @@ class SystemDashboardApp(App[None]):
         sent_mib, recv_mib = get_net_totals_mib()
         process_count = len(psutil.pids())
         uptime_seconds = int(max(0.0, datetime.now().timestamp() - psutil.boot_time()))
+        cpu_percent = psutil.cpu_percent(interval=None)
 
         disk_widget = self.query_one("#disk-panel", Static)
         net_widget = self.query_one("#net-panel", Static)
@@ -287,7 +305,7 @@ class SystemDashboardApp(App[None]):
 
         disk_widget.update(self._render_disk_panel(disk_percent, disk_free, disk_total))
         net_widget.update(self._render_net_panel(sent_mib, recv_mib))
-        system_widget.update(self._render_system_panel(process_count, uptime_seconds))
+        system_widget.update(self._render_system_panel(process_count, uptime_seconds, cpu_percent))
 
     def _render_disk_panel(self, disk_percent: float, free_bytes: int, total_bytes: int) -> str:
         free_gb = free_bytes / (1024 ** 3)
@@ -307,11 +325,12 @@ class SystemDashboardApp(App[None]):
             f"Recv: {recv_mib:8.1f} MiB"
         )
 
-    def _render_system_panel(self, process_count: int, uptime_seconds: int) -> str:
+    def _render_system_panel(self, process_count: int, uptime_seconds: int, cpu_percent: float) -> str:
         hours = uptime_seconds // 3600
         minutes = (uptime_seconds % 3600) // 60
         return (
             "System\n"
+            f"CPU: {cpu_percent:5.1f}%\n"
             f"Processes: {process_count}\n"
             f"Uptime: {hours}h {minutes}m"
         )
@@ -385,7 +404,7 @@ class SystemDashboardApp(App[None]):
                 self.update_rules_panel()
                 # Initialize the log file for this specific rule
                 try:
-                    with open(get_logs_dir() / f"{result.name}.log", "a") as f:
+                    with open(get_logs_dir() / f"{result.name}.log", "a", encoding="utf-8") as f:
                         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         f.write(f"[{timestamp}] --- Rule '{result.name}' Activated ---\n")
                 except OSError as e:
@@ -405,7 +424,7 @@ class SystemDashboardApp(App[None]):
                 self.command_history.clear()
                 # Re-show the header
                 self._write_console_wrapped("Command Console")
-                self._write_console_wrapped("Try: cpu.util | disk.free | net.ports | sensor.temp")
+                self._write_console_wrapped("Try: cpu.util | docker.ps | ec2.list | help")
 
             elif result:
                 self._append_console(str(result))
@@ -449,6 +468,31 @@ class SystemDashboardApp(App[None]):
 
 def main() -> None:
     """Run the Textual dashboard application."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="nano-dsl Terminal Dashboard")
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="Launch the web observability dashboard in background",
+    )
+    parser.add_argument(
+        "--web-port",
+        type=int,
+        default=int(os.environ.get("NANO_WEB_PORT", "5000")),
+        help="Port for the web observability dashboard (default: 5000)",
+    )
+    args, _ = parser.parse_known_args()
+
+    if args.web:
+        try:
+            from nano_logic.web import get_or_start_web_server
+
+            get_or_start_web_server(port=args.web_port)
+            logger.info("Web dashboard started on port %d", args.web_port)
+        except Exception:
+            logger.exception("Could not start background web dashboard")
+
     SystemDashboardApp().run()
 
 

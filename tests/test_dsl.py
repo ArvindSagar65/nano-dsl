@@ -1,14 +1,20 @@
 """Comprehensive test suite for Nano-DSL grammar and engine."""
 import pytest
 from lark.exceptions import LarkError, UnexpectedInput
-from nano_logic.dsl import execute_command, parse_command
-from nano_logic.models import Rule, StopRule
-from nano_logic.engine import (
-    ACTIVE_RULES, save_rules, load_rules, remove_rule,
-    evaluate_active_rules, fetch_metric_value, _OPERATORS, _METRIC_REGISTRY,
-)
-from nano_logic.monitoring import probes
 
+from nano_logic.dsl import execute_command, parse_command
+from nano_logic.engine import (
+    _METRIC_REGISTRY,
+    _OPERATORS,
+    ACTIVE_RULES,
+    evaluate_active_rules,
+    fetch_metric_value,
+    load_rules,
+    remove_rule,
+    save_rules,
+)
+from nano_logic.models import Rule, StopRule
+from nano_logic.monitoring import probes
 
 # ═══════════════════════════════════════════════
 #  1. GRAMMAR — parse tree smoke tests
@@ -533,6 +539,7 @@ class TestDashboardAlertNotifications:
 
     def test_new_alert_line_is_surfaced_in_console_and_rings_bell(self, monkeypatch):
         import asyncio
+
         from nano_logic.dashboard import SystemDashboardApp
         from nano_logic.paths import get_logs_dir
 
@@ -556,7 +563,7 @@ class TestDashboardAlertNotifications:
                     app._check_for_new_alerts()
                     assert not any("ALERT" in line for line in app.command_history)
 
-                    with open(log_path, "a") as f:
+                    with open(log_path, "a", encoding="utf-8") as f:
                         f.write("[00:00:05] \U0001f6a8 [ALERT] cpu.util reached 42.0 (Rule: > 1.0)\n")
 
                     rung = []
@@ -574,6 +581,7 @@ class TestDashboardAlertNotifications:
 
     def test_removed_rule_stops_being_tracked(self, monkeypatch):
         import asyncio
+
         from nano_logic.dashboard import SystemDashboardApp
         from nano_logic.paths import get_logs_dir
 

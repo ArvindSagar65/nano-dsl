@@ -35,5 +35,14 @@ To ensure that alert rules run continuously even when the dashboard UI is closed
 4. **Daemon Sync:** The detached `daemon.py` detects a change in `rules.json`, calls `load_rules()`, and updates its own `ACTIVE_RULES` list.
 5. **Execution:** The daemon continuously fetches `disk.free` data. If the free space drops below 10GB, it logs the alert to `logs/my_rule.log`.
 
+### 5. Plugins (`plugins/`)
+Docker, EC2, and webhook actions register commands, numeric probes, and alert handlers without rewriting the engine. The DSL routes `docker.*` / `ec2.*` through the plugin registry.
+
+### 6. Web dashboard (`web.py`)
+A stdlib HTTP server serves a read-only UI. Mutating commands stay in the TUI (`nano-dsl`). Pair them with `nano-dsl --web`.
+
+### 7. Remote nodes (`agent.py` + `receiver.py`)
+Agents push metrics; `ec2.list` / the web EC2 tab read `NodeStore`.
+
 ## Summary
-By decoupling the heavy monitoring logic into a background daemon and using Lark for robust DSL parsing, Nano-DSL provides a seamless, Unix-like experience that balances an interactive frontend with reliable background automation.
+The TUI, daemon, plugins, and web UI share one engine and `rules.json`. Closing the TUI does not stop alerts. The web UI observes; it does not execute DSL commands.

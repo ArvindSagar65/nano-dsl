@@ -177,6 +177,24 @@ Responsibilities:
 - provides quick usage guidance inside the dashboard,
 - mirrors the common commands users can try.
 
+### `nano_logic/plugins/`
+
+Optional backends discovered on package import.
+
+Responsibilities:
+
+- Docker introspection (`docker_plugin.py`, `docker_probe.py`),
+- EC2 / remote node commands and probes (`ec2_plugin.py`),
+- alert actions (`webhook_plugin.py`, `slack_plugin.py`, `discord_plugin.py`).
+
+### `nano_logic/web.py` and `nano_logic/ui/web/`
+
+Read-only web observability UI and REST API (`nano-web` / `nano-dsl --web`).
+
+### `nano_logic/agent.py` and `nano_logic/receiver.py`
+
+Push telemetry from remote hosts into a central `NodeStore`.
+
 ### `tests/`
 
 Automated tests for the DSL and behavior.
@@ -194,12 +212,16 @@ flowchart LR
     U[User types command] --> D[dashboard.py]
     D --> S[dsl.py parser]
     S -->|display commands| P[monitoring/probes.py]
+    S -->|plugin commands| PL[plugins]
     S -->|rule commands| E[engine.py]
     E --> F[rules.json]
     F --> G[daemon.py]
     G --> E
     G --> L[alert logs]
     L --> D
+    W[web.py] --> E
+    A[agent.py] --> R[receiver.py]
+    R --> PL
 ```
 
 ## How to add a new rule

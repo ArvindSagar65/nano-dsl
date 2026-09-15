@@ -2,8 +2,11 @@
 import json
 import os
 import time
-import psutil
 from dataclasses import asdict
+from typing import Callable
+
+import psutil
+
 from nano_logic.logging_config import configure_logging
 from nano_logic.models import Rule
 from nano_logic.paths import get_rules_file
@@ -45,10 +48,10 @@ def load_rules() -> None:
 #  for both dashboard queries AND alert rules
 # ──────────────────────────────────────────────
 
-_METRIC_REGISTRY: dict[str, callable] = {}
+_METRIC_REGISTRY: dict[str, Callable] = {}
 
 
-def _register_metric(name: str, fn: callable) -> None:
+def _register_metric(name: str, fn: Callable) -> None:
     """Register a metric so it's available for both queries and alerts."""
     _METRIC_REGISTRY[name] = fn
 
@@ -198,9 +201,43 @@ def evaluate_active_rules(cooldown_seconds: float = DEFAULT_ALERT_COOLDOWN_SECON
             continue
 
         _last_triggered_at[rule.id] = now
+        _dispatch_action(rule, current_val)
         triggered.append((rule, current_val))
 
     return triggered
+
+
+def _dispatch_action(rule: Rule, current_val: float) -> bool | None:
+    """Fire the plugin-registered action handler for a triggered rule.
+
+    Built-in actions (e.g. "log") have no registered handler and are
+    ignored here — their existing behavior elsewhere is untouched. Handler
+    failures are swallowed: alerting must never crash rule evaluation.
+    """
+    try:
+        from nano_logic.plugins import get_action_handler
+
+        handler = get_action_handler(rule.action)
+        if handler is None:
+            return None
+        context = {
+            "rule_name": rule.name or f"rule_{rule.id}",
+            "metric": rule.metric,
+            "operator": rule.operator,
+            "threshold": rule.threshold,
+            "value": current_val,
+            "action": rule.action,
+            "message": (
+                f"[ALERT] {rule.metric} = {current_val:.1f} "
+                f"(threshold {rule.operator} {rule.threshold:g}) "
+                f"— rule '{rule.name or f'rule_{rule.id}'}'"
+            ),
+        }
+        result = handler(context)
+        return bool(result)
+    except Exception:  # noqa: BLE001 — notification issues are non-fatal
+        logger.exception("Action '%s' failed for rule %s", rule.action, rule.id)
+        return False
 
 
 # ──────────────────────────────────────────────
@@ -248,3 +285,21 @@ def remove_rule(identifier: str) -> bool:
 def get_metric_names() -> list[str]:
     """Return all registered metric names — useful for autocomplete / guide."""
     return sorted(_METRIC_REGISTRY.keys())
+
+
+# ──────────────────────────────────────────────
+#  Plugin probe integration
+# ──────────────────────────────────────────────
+
+def register_plugin_metrics() -> None:
+    """Pull probe entries exposed by discovered plugins into the metric
+    registry. Built-in metrics keep priority; safe to call repeatedly."""
+    try:
+        from nano_logic.plugins import METRIC_PROBES
+    except Exception:
+        return
+    for name, probe in METRIC_PROBES.items():
+        _METRIC_REGISTRY.setdefault(name, probe)
+
+
+register_plugin_metrics()

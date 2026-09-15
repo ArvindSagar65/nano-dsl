@@ -163,8 +163,19 @@ Use these namespaces for organization:
 - `net.*` — Network and connections
 - `system.*` — System-wide info
 - `sensor.*` — Temperature, battery, fans
-- `docker.*` — Container stats
+- `docker.*` — Container stats (plugin-backed)
 - `service.*` — Service status
+- `ec2.*` — Remote node telemetry (plugin-backed)
+
+## Adding a plugin instead of a core command
+
+For Docker, EC2, or notification backends, subclass `PluginBase` in `nano_logic/plugins/`:
+
+- `command_handlers` — `"docker.ps" -> callable` used by the DSL
+- `probe_registry` — numeric metrics for `alert ...`
+- `action_registry` — `"slack" -> callable(context) -> bool`
+
+Export the class as `Plugin`. `nano_logic.__init__` discovers it on import. The core grammar still needs a literal if users type the command in the TUI.
 
 ## Common Patterns
 

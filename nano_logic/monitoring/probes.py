@@ -53,7 +53,7 @@ def get_cpu_normalised_load() -> tuple[float, float, float]:
             (load_5 / cores) * 100,
             (load_15 / cores) * 100,
         )
-    except OSError:
+    except (OSError, AttributeError):
         return 0.0, 0.0, 0.0
 
 
@@ -418,7 +418,7 @@ def get_system_load_summary() -> dict:
     """Return a dict with CPU %, RAM %, and load averages."""
     try:
         load_1, load_5, load_15 = os.getloadavg()
-    except OSError:
+    except (OSError, AttributeError):
         load_1 = load_5 = load_15 = 0.0
     return {
         "cpu_percent": psutil.cpu_percent(interval=0.2),

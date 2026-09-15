@@ -1,306 +1,320 @@
 # nano-dsl
 
-A lightweight terminal-based system monitoring dashboard with a custom DSL for querying system metrics and managing alert rules.
+A lightweight system-monitoring toolkit with a custom DSL, a Textual TUI, a background alert daemon, optional Docker/EC2 plugins, and a companion web observability dashboard.
+
+Commands that change the machine (kill a process, create a rule, start the receiver) run in the **TUI**. The **web UI** is read-only telemetry.
 
 ## Features
 
-- **Custom DSL**: Query various system metrics (CPU, Memory, Disk, Network, Sensors, Docker, Services) with simple, intuitive commands.
-- **40+ DSL Commands**: 10 metric categories covering CPU, Memory, Disk, GPU, Processes, Network, System, Sensors, Docker, and Services.
-- **Alert Rules Management**: Set up custom rules to monitor system metrics dynamically. Name your rules, assign thresholds, and easily stop them when no longer needed.
-- **Full Operator Support**: Alert operators include `>`, `<`, `==`, `>=`, `<=` for flexible threshold conditions.
-- **Rule Persistence & Background Daemon**: Alert rules are automatically saved (`rules.json` in the XDG state directory) and monitored by an independent, invisible background daemon. Your alerts keep running and logging even after you close the dashboard!
-- **Dedicated Rule Logs**: Every alert rule gets its own dedicated `<rule_name>.log` file.
-- **Real-Time Interactive Dashboard**: A minimalist, beautifully designed TUI (Terminal User Interface) showing live metrics using Textual.
-- **Command History**: Cycle through previously used commands using the Up and Down arrow keys.
-- **Active Rules Panel**: Dedicated UI component to monitor all running alerts at a glance.
-- **Utility Commands**: Built-in `help`, `rules`, `status`, `clear`, `history`, and `guide` commands for easier navigation.
-- **Comprehensive Test Suite**: 155+ tests covering all commands, edge cases, and the rule engine.
+- **Custom DSL** — Query CPU, memory, disk, GPU, processes, network, sensors, systemd, Docker, and remote EC2 nodes with short dotted commands (`cpu.util`, `docker.ps`, `ec2.list`).
+- **45+ commands** across 11 namespaces, parsed with Lark (LALR).
+- **Alert rules** — `name: alert <metric> <op> <threshold> -> <action>` with operators `>`, `<`, `==`, `>=`, `<=`.
+- **Alert actions** — Built-in `log` (per-rule log file + terminal bell). Plugin actions: `webhook`, `slack`, `discord` (URLs from environment variables).
+- **Background daemon** — Rules persist in `rules.json` (XDG state dir) and keep evaluating after you close the TUI.
+- **Textual TUI** — Live disks/network/system panels, in-app guide, command history, active-rules panel, clipboard copy.
+- **Web dashboard** (`nano-web`) — Overview KPIs, per-core CPU, Docker tables, EC2 fleet cards, live alert status. Standard-library HTTP server; Chart.js loaded from CDN.
+- **EC2 / remote nodes** — `nano-agent` pushes metrics to `nano-receiver`; query with `ec2.list` / `ec2.metrics` / `ec2.info`.
+- **Plugin registry** — Drop-in `PluginBase` modules for commands, numeric probes, and alert actions.
 
 ## Getting Started
 
 ### Installation
 
-1. Clone the repository:
 ```bash
 git clone https://github.com/ArvindSagar65/nano-dsl.git
 cd nano-dsl
-```
-
-2. Create and activate a virtual environment:
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-3. Install dependencies:
-```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# Unix:    source .venv/bin/activate
 pip install -r requirements.txt
+pip install -e .
 ```
 
-### Running the Dashboard
+On Windows, PowerShell:
 
-Start the interactive TUI dashboard:
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+pip install -e .
+```
+
+### Run the TUI
+
 ```bash
-.venv/bin/python -m nano_logic.dashboard
+nano-dsl
+# or
+python -m nano_logic.dashboard
 ```
 
-**Navigation:**
-- Type `exit` or `quit` (or press `q`) to cleanly shut down the dashboard (background rules will keep running!)
-- Type commands in the input box at the bottom
-- Use the **Up** and **Down** arrow keys to navigate command history
-- View results in the command console panel
-- Type `help` to see all available commands
-- Type `clear` to clear the console
-- Type `status` for a quick system overview
-- Real-time metrics update automatically in the dashboard panels
-- Active rules are displayed in a dedicated panel
+**TUI navigation**
+
+- Type DSL commands in the input at the bottom; results go to the command console.
+- **Up / Down** cycle command history.
+- `help`, `guide`, `status`, `rules`, `clear`, `history`.
+- `q`, `exit`, or `quit` closes the TUI. **The daemon keeps running** so alerts still fire.
+- `Ctrl+Shift+C` (or `F6`) copies the console to the clipboard.
+
+Launch TUI and web together:
+
+```bash
+nano-dsl --web
+nano-dsl --web --web-port 5000
+```
+
+Then open [http://localhost:5000](http://localhost:5000).
+
+### Run the web dashboard alone
+
+```bash
+nano-web --port 5000
+python -m nano_logic.web --port 5000 --with-receiver
+```
+
+| Endpoint | Description |
+|----------|-------------|
+| `/` | Web UI |
+| `/health` | Service health |
+| `/api/v1/overview` | Lightweight KPI snapshot |
+| `/api/v1/metrics` | Host metrics, per-core CPU, partitions, sensors, top processes |
+| `/api/v1/rules` | Alert rules + recent log lines |
+| `/api/v1/docker` | Containers, stats, images (TTL-cached) |
+| `/api/v1/nodes` | Remote EC2 / agent nodes |
+
+Web UI shortcuts: keys **1–6** switch tabs; **Space** pauses polling.
 
 ---
-## Running Tests 
+
+## Running Tests
 
 ```bash
-# Install pytest
 pip install pytest
-
-# Run the full test suite (155+ tests)
 python -m pytest tests/ -v
-
-# Run a specific test category
-python -m pytest tests/test_dsl.py -v -k "TestGrammarParsing"
-
 ```
----
 
-## Alert Rules Management
-
-You can set up background alert rules that monitor specific metrics and trigger an action (e.g., logging) when a threshold is breached.
-
-| Syntax | Description | Example |
-|--------|-------------|---------|
-| `alert <metric> <operator> <threshold> -> <action>` | Creates an anonymous alert rule | `alert cpu.util > 80 -> log` |
-| `<name> : alert <metric> ...` | Creates a named alert rule | `my_mem_rule : alert mem.util > 50 -> log` |
-| `stop rule <id>` | Stops an active rule by its auto-assigned ID | `stop rule 1` |
-| `stop rule <name>` | Stops an active rule by its custom name | `stop rule my_mem_rule` |
-
-**Operators:** `>`, `<`,`==`,`>=`,`<=`
-*Note: The only action currently supported is `log` (writes to a dedicated `<rule_name>.log` file under the state directory — `$XDG_STATE_HOME/nano-dsl/logs/`, or `~/.local/state/nano-dsl/logs/` by default — and triggers a terminal beep).*
+The suite covers the DSL, rule engine, plugins, Docker probes, webhook actions, EC2 agent/receiver, and web API.
 
 ---
 
-## Test DSL Commands (Try these out!)
+## Alert Rules
 
-Here are some test commands you can paste into the dashboard's command input to see the DSL in action:
+| Syntax | Example |
+|--------|---------|
+| Anonymous | `alert cpu.util > 80 -> log` |
+| Named | `high_cpu: alert cpu.util > 80 -> log` |
+| Stop by id | `stop rule 1` |
+| Stop by name | `stop rule high_cpu` |
 
-**1. Basic Queries:**
-- `cpu.util`
-- `mem.stats`
-- `disk.top`
-- `proc.list`
-- `net.ports`
-- `system.users`
+**Actions**
 
-**2. New Commands:**
+| Action | Behavior |
+|--------|----------|
+| `log` | Append to `$XDG_STATE_HOME/nano-dsl/logs/<rule>.log` (default `~/.local/state/nano-dsl/logs/`) and beep |
+| `webhook` | POST JSON to `NANO_DSL_WEBHOOK_URL` |
+| `slack` | Slack incoming webhook via `NANO_DSL_SLACK_WEBHOOK_URL` |
+| `discord` | Discord webhook via `NANO_DSL_DISCORD_WEBHOOK_URL` |
 
-- `cpu.avg` *(Normalised CPU load percentage)*
-- `mem.cached` *(Cached and buffers memory)*
-- `disk.inode` *(Inode usage on root filesystem)*
-- `proc.search python` *(Search for Python processes)*
-- `proc.tree` *(Process tree view)*
-- `proc.info 1` *(Detailed info for PID 1)*
-- `net.dns google.com` *(DNS lookup)*
-- `system.load` *(Quick CPU + RAM snapshot)*
-- `sensor.temp` *(CPU/device temperatures)*
-- `sensor.battery` *(Battery status)*
+Repeated fires are suppressed for 60 seconds while a condition stays true, then re-arm when it clears.
 
-**3.Utility Commands:**
-- `help` *(Show all available commands)*
-- `rules` *(List active alert rules)*
-- `status`  *(System overview)*
-- `clear` *(Clear the console)*
-- `guide` *(Show the in-app guide)*
-
-**4. Alert Rules (Anonymous):**
-- `alert cpu.util > 10 -> log` *(Will trigger quickly if your CPU is over 10%)*
-- `alert mem.util > 90 -> log`
-- `alert disk.free < 5 -> log`
-- `alert sensor.temp >= 80 -> log`
-
-**5. Alert Rules (Named):**
-- `disk_alert : alert disk.free < 5 -> log`
-- `test_rule : alert cpu.util > 5 -> log`
-- `high_temp : alert sensor.temp > 85 -> log`
-
-**4. Stopping Rules:**
-- `stop rule 1` *(Stops the first rule you created)*
-- `stop rule test_rule` *(Stops the rule named 'test_rule')*
-
-**5. Exiting:**
-- `exit` *(Closes the dashboard, but leaves background rules running)*
+**Alertable metrics (built-in + plugins):** `cpu.util`, `cpu.load1/5/15`, `mem.util`, `mem.used`, `mem.avail`, `swap.util`, `disk.free`, `disk.usage`, `sensor.temp`, `sensor.battery`, `proc.count`, `net.connections`, `docker.containers.running`, `ec2.cpu.util`, `ec2.mem.util`, `ec2.disk.usage`, `ec2.nodes.online`.
 
 ---
 
-## DSL Commands Reference
+## TUI command cheat sheet
 
-### CPU Commands
+**Queries:** `cpu.util` · `mem.stats` · `disk.inode` · `proc.search python` · `net.dns google.com` · `sensor.temp` · `status`
 
-| Command | Description |
-|---------|-------------|
-| `cpu.util` | Current CPU utilization percentage |
-| `cpu.load` | 1/5/15 minute load average (system load) |
-| `cpu.cores` | Number of physical and logical CPU cores |
-| `cpu.top` | Top 5 processes by CPU usage |
-| `cpu.avg` | Normalised load average across all cores |
+**Docker:** `docker.ps` · `docker.stats` · `docker.info` · `docker.images` · `docker.containers` · `docker.logs <name>` · `docker.networks` · `docker.volumes`
 
-### Memory Commands
+**EC2:** `ec2.list` · `ec2.metrics [id]` · `ec2.info [id]` · `ec2.server [start\|stop]`
 
-| Command | Description |
-|---------|-------------|
-| `mem.util` | Current memory utilization percentage |
-| `mem.stats` | Memory details (used, available, total, swap %) |
-| `mem.swap` | Detailed swap memory statistics |
-| `mem.top` | Top 5 processes by memory usage |
-| `mem.cached` | Cached and buffers memory in GiB |
-
-### Disk Commands
-
-| Command | Description |
-|---------|-------------|
-| `disk.free` | Free and total disk space for root filesystem (/) |
-| `disk.usage` | Disk usage percentage for all mounted partitions |
-| `disk.io` | Disk I/O statistics (read/write counts and bytes) |
-| `disk.top` | Top directories by storage usage |
-| `disk.inode` | Inode usage on root filesystem |
-
-### GPU Commands
-
-| Command | Description |
-|---------|-------------|
-|`gpu.util` | GPU utilization and memory (NVIDIA) |
-
-### Process Commands
-
-| Command | Description |
-|---------|-------------|
-| `proc.list` | List all running processes with PIDs |
-| `proc.kill <pid>` | Terminate a process by PID (e.g., `proc.kill 1234`) |
-| `proc.search <name>`	| Find processes by name substring |
-| `proc.tree` |	Process tree view (via ps auxf) |
-| `proc.info <pid>`	| Detailed info (CPU, memory, threads, cmdline) for a PID |
-
-### Network Commands
-
-| Command | Description |
-|---------|-------------|
-| `net.interfaces` | List all network interfaces and their status |
-| `net.bandwidth` | Total network bandwidth (sent/received bytes and packets) |
-| `net.connections` | Active network connections (total, established, listening) |
-| `net.ports`	| List all listening TCP ports |
-| `net.dns <host>`	| DNS lookup for a hostname |
-
-### System Commands
-
-| Command | Description |
-|---------|-------------|
-| `system.uptime` | System uptime in days, hours, and minutes |
-| `system.info` | OS, hostname, kernel, and processor information |
-| `system.processes` | Total process and thread count |
-| `system.users` | Currently logged-in users |
-| `system.load` | Quick CPU + RAM + load snapshot |
-
-### Sensor Commands
-
-| Command | Description |
-|---------|-------------|
-|`sensor.temp` | CPU and device temperatures with thresholds |
-|`sensor.fans` | Fan speeds in RPM |
-|`sensor.battery` | Battery percentage and charging status\
-
-### Docker Commands
-
-| Command | Description |
-|---------|-------------|
-|`docker.ps` | List running Docker containers |
-|`docker.stats` | Live CPU/memory stats for containers |
-
-### Service Commands
-
-| Command | Description |
-|---------|-------------|
-|`service.list` | List running systemd services |
-|`service.status <name>` | Status and logs for a specific service |
-
-### Utility Commands
-
-| Command | Description |
-|---------|-------------|
-|`help` | Show all available commands with descriptions |
-|`rules` | List all active alert rules |
-|`status` | System overview (CPU, RAM, disk, uptime, rules) |
-|`clear` | Clear the command console |
-|`history` | Show command history (use up/down arrows) |
-|`guide` | Show the in-app command guide |
+**Rules:** `disk_alert: alert disk.free < 5 -> log` · `alert ec2.cpu.util > 80 -> webhook` · `stop rule disk_alert`
 
 ---
 
-## Dashboard Panels
+## DSL command reference
 
-The main dashboard displays real-time metric panels with **ASCII sparkline graphs** showing trends, plus specialized console panels. It uses a minimalist, distraction-free aesthetic:
+### CPU
 
-1. **Disk Usage** - Root filesystem percentage and trend
-2. **Network** - Sent/received data totals
-3. **System** - Process count and system uptime
-4. **Active Rules** - Displays all currently running alert rules (ID, Name, Condition)
-5. **Command Console** - Output logs and command history
+| Command | Description |
+|---------|-------------|
+| `cpu.util` | CPU utilization % |
+| `cpu.load` | 1/5/15 minute load average |
+| `cpu.cores` | Physical and logical cores |
+| `cpu.top` | Top 5 processes by CPU |
+| `cpu.avg` | Load average normalised by core count |
 
-All metric panels are updated every second.
+### Memory
+
+| Command | Description |
+|---------|-------------|
+| `mem.util` | Memory utilization % |
+| `mem.stats` | Used / available / total / swap |
+| `mem.swap` | Swap details |
+| `mem.top` | Top 5 processes by memory |
+| `mem.cached` | Cached and buffers |
+
+### Disk
+
+| Command | Description |
+|---------|-------------|
+| `disk.free` | Free space on `/` |
+| `disk.usage` | All mounted partitions |
+| `disk.io` | Read/write counters |
+| `disk.top` | Directory sizes (`du`) |
+| `disk.inode` | Inode usage (Unix) |
+
+### GPU / process / network / system / sensors
+
+| Command | Description |
+|---------|-------------|
+| `gpu.util` | NVIDIA GPU util & memory (`nvidia-smi`) |
+| `proc.list` | Running processes |
+| `proc.kill <pid>` | Terminate a process |
+| `proc.search <name>` | Find by name |
+| `proc.tree` | Process tree (`ps auxf`) |
+| `proc.info <pid>` | Details for one PID |
+| `net.interfaces` | Interfaces and IPv4 |
+| `net.bandwidth` | Bytes/packets sent and received |
+| `net.connections` | Totals by state |
+| `net.ports` | Listening TCP ports |
+| `net.dns <host>` | DNS lookup |
+| `system.uptime` | Uptime |
+| `system.info` | OS / hostname / arch |
+| `system.processes` | Process and thread counts |
+| `system.users` | Logged-in users |
+| `system.load` | Load + CPU + RAM snapshot |
+| `sensor.temp` | Temperatures |
+| `sensor.fans` | Fan RPM |
+| `sensor.battery` | Battery % |
+
+### Docker
+
+| Command | Description |
+|---------|-------------|
+| `docker.ps` | Running containers |
+| `docker.stats` | CPU/memory stats |
+| `docker.info` | Daemon info |
+| `docker.images` | Images |
+| `docker.containers` | All containers |
+| `docker.logs <name>` | Container logs |
+| `docker.networks` | Networks |
+| `docker.volumes` | Volumes |
+
+### Services
+
+| Command | Description |
+|---------|-------------|
+| `service.list` | Running systemd units |
+| `service.status <name>` | Status and recent logs |
+
+### EC2 & remote nodes
+
+| Command | Description |
+|---------|-------------|
+| `ec2.list` | Connected nodes and live CPU/mem/disk |
+| `ec2.metrics [id]` | Full metric dump for a node |
+| `ec2.info [id]` | IMDSv2 metadata (type, AZ, IPs) |
+| `ec2.server [start\|stop]` | Receiver status / control |
+
+### Utility
+
+| Command | Description |
+|---------|-------------|
+| `help` | Command list |
+| `rules` | Active alerts |
+| `status` | Host overview |
+| `clear` | Clear TUI console |
+| `history` | History hint |
+| `guide` | In-app TUI guide |
 
 ---
 
-## Project Structure
+## TUI dashboard panels
+
+The Textual app uses a dark layout with a left-hand **guide**, three live metric cards, an **active rules** panel, and the **command console**:
+
+1. **Disk** — root usage % and a progress bar  
+2. **Network** — sent / received MiB  
+3. **System** — CPU %, process count, uptime  
+4. **Active rules** — id, name, condition, action  
+5. **Console** — query output and alert tails from the daemon logs  
+
+Panels refresh about once per second. The daemon is spawned on TUI start (single-instance lock). Closing the TUI does **not** stop rules.
+
+---
+
+## EC2 remote monitoring
+
+**1. Receiver** (auto-started when the EC2 plugin loads, or run by hand):
+
+```bash
+python -m nano_logic.receiver --port 8080
+# or
+nano-receiver
+```
+
+**2. Agent on the remote host:**
+
+```bash
+nano-agent --receiver-url http://<YOUR_IP>:8080/metrics --interval 5
+```
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `NANO_RECEIVER_URL` | `http://localhost:8080/metrics` | Push URL |
+| `NANO_PUSH_INTERVAL` | `5` | Seconds |
+| `NANO_NODE_ID` | IMDSv2 instance id or hostname | Node id |
+| `NANO_AUTH_TOKEN` | unset | Optional shared token |
+
+On EC2 the agent reads IMDSv2 (instance id, type, AZ, public/private IP). Elsewhere it uses hostname and local platform info.
+
+---
+
+## Project structure
 
 ```
 nano-dsl/
-├── README.md                 # Documentation
-├── requirements.txt         # Python dependencies
+├── README.md
+├── requirements.txt
+├── pyproject.toml          # entry points: nano-dsl, nano-web, nano-agent, nano-receiver
 ├── nano_logic/
-│   ├── __init__.py
-│   ├── dashboard.py         # Main Textual TUI application (Frontend)
-│   ├── daemon.py            # Independent background monitoring process
-│   ├── dsl.py              # DSL parser and executor (Lark-based)
-│   ├── engine.py           # Background rule evaluation engine
-│   ├── models.py           # Core data structures (Rules, etc.)
-│   ├── monitoring/
-│   │   ├── __init__.py
-│   │   └── probes.py       # System metric collection functions
+│   ├── dashboard.py        # Textual TUI (`nano-dsl`, optional --web)
+│   ├── web.py              # Web UI + REST (`nano-web`)
+│   ├── daemon.py           # Background rule evaluator
+│   ├── dsl.py              # Lark grammar + command executor
+│   ├── engine.py           # Metric registry, persistence, cooldowns, plugin actions
+│   ├── agent.py            # Remote telemetry pusher
+│   ├── receiver.py         # HTTP ingest + NodeStore
+│   ├── plugins/            # Docker, EC2, webhook / Slack / Discord
+│   ├── monitoring/probes.py
 │   └── ui/
-│       ├── __init__.py
-│       └── guide.py        # In-app command guide
+│       ├── guide.py        # TUI sidebar guide
+│       └── web/            # index.html, dashboard.css, dashboard.js
 └── tests/
-    ├── __init__.py
-    └── test_dsl.py         # 155+ comprehensive test suite
-
 ```
-## Adding a New Command
 
-1. Grammar — Add the rule to `DSL_GRAMMAR` in `nano_logic/dsl.py`
-2. Transformer — Add the corresponding method in `MetricsTransformer`
-3. Probes — Add the data collector in `nano_logic/monitoring/probes.py` (optional)
-4. Engine — Register the metric in `nano_logic/engine.py` if you want alert support
-5. Guide — Add to `nano_logic/ui/guide.py`
-6. Tests — Add test cases in `tests/test_dsl.py`
+### Adding a command
+
+1. Grammar + transformer in `nano_logic/dsl.py`  
+2. Optional numeric probe in `engine.py` or a plugin `probe_registry`  
+3. Optional collector in `monitoring/probes.py`  
+4. Guide text in `ui/guide.py`  
+5. Tests in `tests/`  
+
+**Adding a plugin:** subclass `PluginBase` in `nano_logic/plugins/`, expose `Plugin = YourClass`. Discovery registers `command_handlers`, `probe_registry`, and `action_registry` on import.
 
 ---
 
 ## Requirements
 
-- Python 3.8+
-- `textual` >= 0.58.0 - Terminal user interface framework
-- `psutil` >= 5.9.0 - System and process utilities
-- `lark` >= 1.2.2 - DSL parsing library
-- `pytest` — Test runner (dev only)
+- Python 3.8+  
+- `textual` ≥ 0.58.0  
+- `psutil` ≥ 5.9.0  
+- `lark` ≥ 1.2.2  
+- `pytest` for tests  
 
-
-See `requirements.txt` for full dependency list.
+See `requirements.txt`. Optional: Docker CLI or SDK for container views; `nvidia-smi` for GPU; systemd for service commands (Linux).
 
 ---
 

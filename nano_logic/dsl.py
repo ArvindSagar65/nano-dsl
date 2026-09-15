@@ -1,16 +1,20 @@
 """Minimal DSL parser/executor for system utilization commands."""
 from __future__ import annotations
+
 import os
-import time
 import platform
 import socket
 import subprocess
+import time
+
 import psutil
 from lark import Lark, Transformer
 from lark.exceptions import LarkError
 from lark.tree import Tree
-from nano_logic.models import Rule, StopRule
+
+from nano_logic import plugins as _plugin_registry
 from nano_logic.engine import ACTIVE_RULES
+from nano_logic.models import Rule, StopRule
 from nano_logic.monitoring.probes import (
     get_all_processes,
     get_process_by_name,
@@ -32,14 +36,14 @@ ALERT: "alert"i
 ARROW: "->"
 RULE_KW.2: "rule"
 RULE_NAME: /[a-zA-Z_][a-zA-Z0-9_-]*/
-METRIC_NAME: /[a-zA-Z_]+\.[a-zA-Z_]+/
+METRIC_NAME: /[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)+/
 OPERATOR: ">" | "<" | "==" | ">=" | "<="
 ACTION: /[a-zA-Z_]+/
 
 # ── Commands organized by namespace ──
 ?command: cpu_cmd | mem_cmd | disk_cmd | gpu_cmd | proc_cmd
         | net_cmd | sys_cmd | sensor_cmd | docker_cmd | service_cmd
-        | utility_cmd
+        | ec2_cmd | utility_cmd
 
 # Using proven three-token "cpu" "." "metric" pattern throughout
 cpu_cmd: "cpu" "." "util"    -> cpu_util
@@ -84,11 +88,25 @@ sensor_cmd: "sensor" "." "temp"    -> sensor_temp
           | "sensor" "." "fans"    -> sensor_fans
           | "sensor" "." "battery" -> sensor_battery
 
-docker_cmd: "docker" "." "ps"      -> docker_ps
-          | "docker" "." "stats"   -> docker_stats
+docker_cmd: "docker" "." "ps"         -> docker_ps
+          | "docker" "." "stats"      -> docker_stats
+          | "docker" "." "info"       -> docker_info
+          | "docker" "." "images"     -> docker_images
+          | "docker" "." "containers" -> docker_containers
+          | "docker" "." "logs" CMD   -> docker_logs
+          | "docker" "." "networks"   -> docker_networks
+          | "docker" "." "volumes"    -> docker_volumes
 
 service_cmd: "service" "." "list"          -> service_list
            | "service" "." "status" CMD    -> service_status
+
+ec2_cmd: "ec2" "." "list"             -> ec2_list
+       | "ec2" "." "metrics" CMD      -> ec2_metrics
+       | "ec2" "." "metrics"          -> ec2_metrics
+       | "ec2" "." "info" CMD         -> ec2_info
+       | "ec2" "." "info"             -> ec2_info
+       | "ec2" "." "server" CMD       -> ec2_server
+       | "ec2" "." "server"           -> ec2_server
 
 utility_cmd: "clear"   -> cmd_clear
            | "help"    -> cmd_help
@@ -105,7 +123,9 @@ CMD: /[a-zA-Z0-9_.\-\/]+/
 %ignore WS
 """
 
+# LALR is the fastest Lark parser that still supports this grammar.
 parser = Lark(DSL_GRAMMAR, parser="lalr")
+_TRANSFORMER = None
 
 # ──────────────────────────────────────────────
 #  Helpers
@@ -113,6 +133,17 @@ parser = Lark(DSL_GRAMMAR, parser="lalr")
 
 def _format_gib(value_bytes: int) -> float:
     return value_bytes / (1024 ** 3)
+
+
+def _loadavg() -> tuple[float, float, float] | None:
+    """Return (1m, 5m, 15m) load averages, or None on platforms without them."""
+    getter = getattr(os, "getloadavg", None)
+    if getter is None:
+        return None
+    try:
+        return getter()
+    except OSError:
+        return None
 
 
 def _run_cmd(cmd: list[str], timeout: int = 5) -> str:
@@ -128,6 +159,27 @@ def _run_cmd(cmd: list[str], timeout: int = 5) -> str:
         return f"Timeout: {cmd[0]} did not respond in {timeout}s"
     except Exception as e:
         return f"Error: {e}"
+
+
+_DOCKER_FALLBACKS = {
+    "docker.ps": "docker_ps_report",
+    "docker.stats": "docker_stats_report",
+    "docker.info": "docker_info_report",
+    "docker.images": "docker_images_report",
+    "docker.containers": "docker_containers_report",
+    "docker.logs": "docker_logs_report",
+    "docker.networks": "docker_networks_report",
+    "docker.volumes": "docker_volumes_report",
+}
+
+
+def _docker_backend_fallback(key: str, children: list) -> str:
+    """Direct docker_probe call, used only when no plugin handler exists."""
+    from nano_logic.plugins import docker_probe
+    fn = getattr(docker_probe, _DOCKER_FALLBACKS[key])
+    if key == "docker.logs":
+        return fn(str(children[0]) if children else "")
+    return fn()
 
 
 # ──────────────────────────────────────────────
@@ -160,19 +212,21 @@ class MetricsTransformer(Transformer):
 
     # ── CPU ──
     def cpu_util(self, _children: list) -> str:
-        return f"CPU Usage: {psutil.cpu_percent(interval=0.5):.1f}%"
+        # Non-blocking sample (interval=None). Callers that need a blocking
+        # first reading should warm up cpu_percent once at process start.
+        return f"CPU Usage: {psutil.cpu_percent(interval=None):.1f}%"
 
     def cpu_load(self, _children: list) -> str:
-        try:
-            load_1, load_5, load_15 = os.getloadavg()
-            cpu_count = max(1, psutil.cpu_count() or 1)
-            return (
-                "CPU Load: "
-                f"1m={load_1:.2f}, 5m={load_5:.2f}, 15m={load_15:.2f} "
-                f"(norm1m={(load_1 / cpu_count) * 100:.1f}%)"
-            )
-        except OSError:
+        load = _loadavg()
+        if load is None:
             return "CPU Load: unavailable on this platform"
+        load_1, load_5, load_15 = load
+        cpu_count = max(1, psutil.cpu_count() or 1)
+        return (
+            "CPU Load: "
+            f"1m={load_1:.2f}, 5m={load_5:.2f}, 15m={load_15:.2f} "
+            f"(norm1m={(load_1 / cpu_count) * 100:.1f}%)"
+        )
 
     def cpu_cores(self, _children: list) -> str:
         physical = psutil.cpu_count(logical=False) or 1
@@ -191,17 +245,17 @@ class MetricsTransformer(Transformer):
 
     def cpu_avg(self, _children: list) -> str:
         """Normalised average CPU load over 1/5/15 minutes."""
-        try:
-            load_1, load_5, load_15 = os.getloadavg()
-            cores = psutil.cpu_count() or 1
-            return (
-                f"CPU Avg Load (normalised): "
-                f"1m={load_1/cores*100:.1f}%, "
-                f"5m={load_5/cores*100:.1f}%, "
-                f"15m={load_15/cores*100:.1f}%"
-            )
-        except OSError:
+        load = _loadavg()
+        if load is None:
             return "CPU Avg: unavailable on this platform"
+        load_1, load_5, load_15 = load
+        cores = psutil.cpu_count() or 1
+        return (
+            f"CPU Avg Load (normalised): "
+            f"1m={load_1/cores*100:.1f}%, "
+            f"5m={load_5/cores*100:.1f}%, "
+            f"15m={load_15/cores*100:.1f}%"
+        )
 
     # ── Memory ──
     def mem_util(self, _children: list) -> str:
@@ -241,9 +295,10 @@ class MetricsTransformer(Transformer):
     def mem_cached(self, _children: list) -> str:
         mem = psutil.virtual_memory()
         buffers_gib = _format_gib(getattr(mem, "buffers", 0))
+        cached_gib = _format_gib(getattr(mem, "cached", 0))
         return (
             "Memory Cached/Buffers: "
-            f"cached={_format_gib(mem.cached):.2f}GiB, "
+            f"cached={cached_gib:.2f}GiB, "
             f"buffers={buffers_gib:.2f}GiB"
         )
 
@@ -489,16 +544,16 @@ class MetricsTransformer(Transformer):
 
     def system_load(self, _children: list) -> str:
         """Quick system load overview."""
-        try:
-            load_1, load_5, load_15 = os.getloadavg()
-            cpu_pct = psutil.cpu_percent(interval=0.2)
-            mem_pct = psutil.virtual_memory().percent
-            return (
-                f"System Load: load={load_1:.2f}/{load_5:.2f}/{load_15:.2f} | "
-                f"CPU: {cpu_pct:.1f}% | RAM: {mem_pct:.1f}%"
-            )
-        except OSError:
+        load = _loadavg()
+        if load is None:
             return "System Load: unavailable on this platform"
+        load_1, load_5, load_15 = load
+        cpu_pct = psutil.cpu_percent(interval=None)
+        mem_pct = psutil.virtual_memory().percent
+        return (
+            f"System Load: load={load_1:.2f}/{load_5:.2f}/{load_15:.2f} | "
+            f"CPU: {cpu_pct:.1f}% | RAM: {mem_pct:.1f}%"
+        )
 
     # ── Sensors ──
     def sensor_temp(self, _children: list) -> str:
@@ -548,22 +603,38 @@ class MetricsTransformer(Transformer):
             return f"Sensor Battery: Error - {e}"
 
     # ── Docker ──
+    # Resolves through the discovered DockerPlugin first; falls back to the
+    # docker_probe backend directly if the plugin registry has no handler,
+    # so the commands keep working even with a broken/absent plugin system.
+    def _docker(self, key: str, children: list) -> str:
+        handler = _plugin_registry.get_command_handler(key)
+        if handler is not None:
+            return handler(*children)
+        return _docker_backend_fallback(key, children)
+
     def docker_ps(self, _children: list) -> str:
-        result = _run_cmd([
-            "docker", "ps", "--format", "table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}"
-        ])
-        if "Command not found" in result:
-            return "Docker: not available"
-        return "Docker Containers:\n" + result
+        return self._docker("docker.ps", _children)
 
     def docker_stats(self, _children: list) -> str:
-        result = _run_cmd([
-            "docker", "stats", "--no-stream", "--format",
-            "table {{.Name}}\t{{.CPUPerc}}\t{{.MemPerc}}\t{{.MemUsage}}"
-        ])
-        if "Command not found" in result:
-            return "Docker: not available"
-        return "Docker Stats:\n" + result
+        return self._docker("docker.stats", _children)
+
+    def docker_info(self, _children: list) -> str:
+        return self._docker("docker.info", _children)
+
+    def docker_images(self, _children: list) -> str:
+        return self._docker("docker.images", _children)
+
+    def docker_containers(self, _children: list) -> str:
+        return self._docker("docker.containers", _children)
+
+    def docker_logs(self, children: list) -> str:
+        return self._docker("docker.logs", children)
+
+    def docker_networks(self, _children: list) -> str:
+        return self._docker("docker.networks", _children)
+
+    def docker_volumes(self, _children: list) -> str:
+        return self._docker("docker.volumes", _children)
 
     # ── Service ──
     def service_list(self, _children: list) -> str:
@@ -579,6 +650,26 @@ class MetricsTransformer(Transformer):
         if not service.endswith(".service"):
             service += ".service"
         return _run_cmd(["systemctl", "status", service, "--no-pager", "--lines=10"])
+
+    # ── EC2 & Remote Nodes ──
+    def _ec2(self, key: str, children: list) -> str:
+        handler = _plugin_registry.get_command_handler(key)
+        if handler is not None:
+            clean_children = [str(c) for c in children if c is not None]
+            return handler(*clean_children)
+        return f"Plugin handler for '{key}' not found."
+
+    def ec2_list(self, _children: list) -> str:
+        return self._ec2("ec2.list", _children)
+
+    def ec2_metrics(self, children: list) -> str:
+        return self._ec2("ec2.metrics", children)
+
+    def ec2_info(self, children: list) -> str:
+        return self._ec2("ec2.info", children)
+
+    def ec2_server(self, children: list) -> str:
+        return self._ec2("ec2.server", children)
 
     # ── Utility ──
     def cmd_clear(self, _children: list) -> str:
@@ -597,8 +688,10 @@ class MetricsTransformer(Transformer):
             "  Network:    net.interfaces, net.bandwidth, net.connections, net.ports, net.dns <host>\n"
             "  System:     system.uptime, system.info, system.processes, system.users, system.load\n"
             "  Sensors:    sensor.temp, sensor.fans, sensor.battery\n"
-            "  Docker:     docker.ps, docker.stats\n"
+            "  Docker:     docker.ps, docker.stats, docker.info, docker.images,\n"
+            "              docker.containers, docker.logs <name>, docker.networks, docker.volumes\n"
             "  Services:   service.list, service.status <name>\n"
+            "  EC2/Cloud:  ec2.list, ec2.metrics [id], ec2.info [id], ec2.server [start|stop]\n"
             "  Utility:    clear, help, rules, status, history, guide\n\n"
             "  Alerts:     <name>: alert <metric> <op> <val> -> <action>\n"
             "              stop [rule] <id_or_name>\n"
@@ -617,18 +710,23 @@ class MetricsTransformer(Transformer):
     def cmd_status(self, _children: list) -> str:
         """Quick system status overview."""
         try:
-            cpu = psutil.cpu_percent(interval=0.3)
+            cpu = psutil.cpu_percent(interval=None)
             mem = psutil.virtual_memory()
             disk = psutil.disk_usage("/")
             uptime_secs = int(time.time() - psutil.boot_time())
             days = uptime_secs // 86400
             hours = (uptime_secs % 86400) // 3600
-            load_1, load_5, load_15 = os.getloadavg()
+            load = _loadavg()
+            if load is None:
+                load_line = "unavailable"
+            else:
+                load_1, load_5, load_15 = load
+                load_line = f"{load_1:.2f} / {load_5:.2f} / {load_15:.2f}"
             return (
                 f"System Status Overview\n"
                 f"{'='*50}\n"
                 f"  Uptime:   {days}d {hours}h\n"
-                f"  Load:     {load_1:.2f} / {load_5:.2f} / {load_15:.2f}\n"
+                f"  Load:     {load_line}\n"
                 f"  CPU:      {cpu:.1f}%\n"
                 f"  RAM:      {mem.percent:.1f}% ({_format_gib(mem.used):.1f}/{_format_gib(mem.total):.1f} GiB)\n"
                 f"  Disk:     {disk.percent:.1f}% ({_format_gib(disk.used):.1f}/{_format_gib(disk.total):.1f} GiB)\n"
@@ -657,13 +755,21 @@ def parse_command(command_text: str):
     return parser.parse(command_text)
 
 
+def _transformer() -> MetricsTransformer:
+    """Reuse one transformer — it is stateless and construction is wasted work."""
+    global _TRANSFORMER
+    if _TRANSFORMER is None:
+        _TRANSFORMER = MetricsTransformer()
+    return _TRANSFORMER
+
+
 def execute_command(command_text: str) -> str | Rule | StopRule:
     """Parse and execute a DSL command.
 
     Returns a string for queries, or a Rule / StopRule for alert operations.
     """
     tree = parse_command(command_text)
-    result = MetricsTransformer().transform(tree)
+    result = _transformer().transform(tree)
     if isinstance(result, Tree):
         return ""
     return result
