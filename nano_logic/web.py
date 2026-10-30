@@ -37,9 +37,37 @@ WEB_DIR = Path(__file__).resolve().parent / "ui" / "web"
 _BOOT_TIME = psutil.boot_time() if hasattr(psutil, "boot_time") else time.time()
 
 
-# ──────────────────────────────────────────────
-#  Data Collector Functions
-# ──────────────────────────────────────────────
+_LAST_SENSOR_READ: float = 0.0
+_CACHED_TEMPS: dict[str, list[dict[str, Any]]] = {}
+
+
+def _refresh_sensors_worker() -> None:
+    global _LAST_SENSOR_READ, _CACHED_TEMPS
+    try:
+        if hasattr(psutil, "sensors_temperatures"):
+            raw = psutil.sensors_temperatures()
+            if raw:
+                _CACHED_TEMPS = {
+                    name: [
+                        {"label": s.label or name, "current": s.current, "high": s.high, "critical": s.critical}
+                        for s in entries
+                    ]
+                    for name, entries in raw.items()
+                }
+    except Exception:
+        pass
+    _LAST_SENSOR_READ = time.time()
+
+
+def _get_cached_temperatures() -> dict[str, list[dict[str, Any]]]:
+    """Return cached temperature readings immediately without blocking on hwmon latency."""
+    global _LAST_SENSOR_READ
+    now = time.time()
+    if now - _LAST_SENSOR_READ > 15.0:
+        _LAST_SENSOR_READ = now  # debounce
+        threading.Thread(target=_refresh_sensors_worker, daemon=True).start()
+    return _CACHED_TEMPS
+
 
 def get_system_metrics_payload() -> dict[str, Any]:
     """Collect comprehensive local host metrics."""
@@ -110,18 +138,8 @@ def get_system_metrics_payload() -> dict[str, Any]:
     except Exception:
         pass
 
-    # Sensors (Temperature, Battery)
-    temperatures: dict[str, list[dict[str, Any]]] = {}
-    try:
-        temps = psutil.sensors_temperatures() if hasattr(psutil, "sensors_temperatures") else {}
-        if temps:
-            for name, entries in temps.items():
-                temperatures[name] = [
-                    {"label": s.label or name, "current": s.current, "high": s.high, "critical": s.critical}
-                    for s in entries
-                ]
-    except Exception:
-        pass
+    # Sensors (Temperature, Battery) - cached to avoid hwmon bus latency
+    temperatures = _get_cached_temperatures()
 
     battery = None
     try:
