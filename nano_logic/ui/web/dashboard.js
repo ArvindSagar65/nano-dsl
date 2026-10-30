@@ -69,7 +69,7 @@
     const commonOptions = {
       responsive: true,
       maintainAspectRatio: false,
-      animation: { duration: 0 },
+      animation: { duration: 300 },
       plugins: {
         legend: { display: false },
         tooltip: {
@@ -158,121 +158,108 @@
 
   // ── Data Fetching Engine ──
   async function fetchData() {
-    if (document.hidden) return;
     try {
       if (activeTab === 'overview') {
-        const [overview, metrics, rules] = await Promise.all([
-          fetchJson('/api/v1/overview'),
+        const [metrics, rules, docker, nodes] = await Promise.all([
           fetchJson('/api/v1/metrics'),
           fetchJson('/api/v1/rules'),
+          fetchJson('/api/v1/docker'),
+          fetchJson('/api/v1/nodes')
         ]);
-        applyOverviewSnapshot(overview, metrics, rules);
+        updateOverview(metrics, rules, docker, nodes);
         updateSystemMetrics(metrics);
         updateRules(rules);
+        updateDocker(docker);
+        updateNodes(nodes);
       } else if (activeTab === 'metrics') {
         const metrics = await fetchJson('/api/v1/metrics');
         updateSystemMetrics(metrics);
         updateCharts(metrics.cpu.util_percent, metrics.memory.percent);
-        markUpdated();
       } else if (activeTab === 'docker') {
         const docker = await fetchJson('/api/v1/docker');
         updateDocker(docker);
-        markUpdated();
       } else if (activeTab === 'nodes') {
         const nodes = await fetchJson('/api/v1/nodes');
         updateNodes(nodes);
-        markUpdated();
       } else if (activeTab === 'rules') {
         const rules = await fetchJson('/api/v1/rules');
         updateRules(rules);
-        markUpdated();
-      } else {
-        markUpdated();
       }
-      setFetchError(null);
     } catch (err) {
       console.error('Failed to fetch dashboard data:', err);
-      setFetchError('Live feed paused — could not reach the nano-web API.');
     }
-  }
-
-  function applyOverviewSnapshot(overview, metrics, rules) {
-    if (!metrics) return;
-
-    const cpuVal = metrics.cpu.util_percent;
-    setText('kpi-cpu', `${cpuVal.toFixed(1)}%`);
-    setWidth('bar-cpu', `${Math.min(100, Math.max(0, cpuVal))}%`);
-    setText('kpi-cpu-sub', `Load: ${metrics.cpu.load_1m.toFixed(2)}, ${metrics.cpu.load_5m.toFixed(2)}, ${metrics.cpu.load_15m.toFixed(2)}`);
-    setText('chart-cpu-current', `${cpuVal.toFixed(1)}%`);
-
-    const memVal = metrics.memory.percent;
-    setText('kpi-mem', `${memVal.toFixed(1)}%`);
-    setWidth('bar-mem', `${Math.min(100, Math.max(0, memVal))}%`);
-    setText('kpi-mem-sub', `${metrics.memory.used_gb} GB / ${metrics.memory.total_gb} GB`);
-    setText('chart-mem-current', `${memVal.toFixed(1)}%`);
-
-    const diskVal = metrics.disk.root_usage_percent;
-    setText('kpi-disk', `${diskVal.toFixed(1)}%`);
-    setWidth('bar-disk', `${Math.min(100, Math.max(0, diskVal))}%`);
-    setText('kpi-disk-sub', `${metrics.disk.root_free_gb} GB free`);
-
-    if (overview && overview.docker) {
-      setText('kpi-docker', `${overview.docker.containers_running}`);
-      setText('kpi-docker-sub', `${overview.docker.containers_running} running / ${overview.docker.containers_total} total`);
-      setText('docker-tab-count', `${overview.docker.containers_total}`);
-    }
-
-    if (overview && overview.nodes) {
-      setText('kpi-nodes', `${overview.nodes.total}`);
-      setText('kpi-nodes-sub', `${overview.nodes.online} online`);
-      setText('nodes-tab-count', `${overview.nodes.total}`);
-    }
-
-    if (overview && overview.rules) {
-      setText('kpi-rules', `${overview.rules.total}`);
-      setText('kpi-rules-sub', `${overview.rules.firing} firing`);
-      setText('rules-tab-count', `${overview.rules.total}`);
-      const card = document.getElementById('kpi-rules-card');
-      if (card) card.classList.toggle('rose', overview.rules.firing > 0);
-    }
-
-    setText('ov-hostname', metrics.system.hostname);
-    setText('ov-os', `${metrics.system.os} ${metrics.system.os_release} (${metrics.system.architecture})`);
-    setText('ov-uptime', formatUptime(metrics.system.uptime_seconds));
-    setText('ov-cpu-cores', `${metrics.system.cpu_count_physical} physical / ${metrics.system.cpu_count_logical} logical`);
-    setText('ov-procs', `${metrics.processes.total_count}`);
-
-    if (rules && rules.recent_alerts) {
-      renderAlertLogs(rules.recent_alerts, 'ov-alert-logs');
-      setText('ov-alert-count', `${rules.recent_alerts.length} logged`);
-    }
-
-    updateCharts(cpuVal, memVal);
-    markUpdated();
-  }
-
-  function markUpdated() {
-    const now = new Date();
-    const stamp = now.toLocaleTimeString([], { hour12: false });
-    setText('last-updated', stamp);
-  }
-
-  function setFetchError(message) {
-    const banner = document.getElementById('error-banner');
-    if (!banner) return;
-    if (!message) {
-      banner.classList.add('hidden');
-      banner.textContent = '';
-      return;
-    }
-    banner.textContent = message;
-    banner.classList.remove('hidden');
   }
 
   async function fetchJson(url) {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status} from ${url}`);
     return await res.json();
+  }
+
+  // ── Render Overview ──
+  function updateOverview(metrics, rules, docker, nodes) {
+    if (!metrics) return;
+
+    // CPU KPI
+    const cpuVal = metrics.cpu.util_percent;
+    setText('kpi-cpu', `${cpuVal.toFixed(1)}%`);
+    setWidth('bar-cpu', `${Math.min(100, Math.max(0, cpuVal))}%`);
+    setText('kpi-cpu-sub', `Load: ${metrics.cpu.load_1m.toFixed(2)}, ${metrics.cpu.load_5m.toFixed(2)}, ${metrics.cpu.load_15m.toFixed(2)}`);
+    setText('chart-cpu-current', `${cpuVal.toFixed(1)}%`);
+
+    // Mem KPI
+    const memVal = metrics.memory.percent;
+    setText('kpi-mem', `${memVal.toFixed(1)}%`);
+    setWidth('bar-mem', `${Math.min(100, Math.max(0, memVal))}%`);
+    setText('kpi-mem-sub', `${metrics.memory.used_gb} GB / ${metrics.memory.total_gb} GB`);
+    setText('chart-mem-current', `${memVal.toFixed(1)}%`);
+
+    // Disk KPI
+    const diskVal = metrics.disk.root_usage_percent;
+    setText('kpi-disk', `${diskVal.toFixed(1)}%`);
+    setWidth('bar-disk', `${Math.min(100, Math.max(0, diskVal))}%`);
+    setText('kpi-disk-sub', `${metrics.disk.root_free_gb} GB free`);
+
+    // Docker KPI
+    if (docker) {
+      setText('kpi-docker', `${docker.running_count}`);
+      setText('kpi-docker-sub', `${docker.running_count} running / ${docker.containers_count} total`);
+      setText('docker-tab-count', `${docker.containers_count}`);
+    }
+
+    // Nodes KPI
+    if (nodes) {
+      setText('kpi-nodes', `${nodes.total_nodes}`);
+      setText('kpi-nodes-sub', `${nodes.online_nodes} online`);
+      setText('nodes-tab-count', `${nodes.total_nodes}`);
+    }
+
+    // Rules KPI
+    if (rules) {
+      setText('kpi-rules', `${rules.total_rules}`);
+      setText('kpi-rules-sub', `${rules.firing_rules} firing`);
+      setText('rules-tab-count', `${rules.total_rules}`);
+      const card = document.getElementById('kpi-rules-card');
+      if (card) {
+        card.classList.toggle('rose', rules.firing_rules > 0);
+      }
+    }
+
+    // System summary table
+    setText('ov-hostname', metrics.system.hostname);
+    setText('ov-os', `${metrics.system.os} ${metrics.system.os_release} (${metrics.system.architecture})`);
+    setText('ov-uptime', formatUptime(metrics.system.uptime_seconds));
+    setText('ov-cpu-cores', `${metrics.system.cpu_count_physical} physical / ${metrics.system.cpu_count_logical} logical`);
+    setText('ov-procs', `${metrics.processes.total_count}`);
+
+    // Overview alert events
+    if (rules && rules.recent_alerts) {
+      renderAlertLogs(rules.recent_alerts, 'ov-alert-logs');
+      setText('ov-alert-count', `${rules.recent_alerts.length} logged`);
+    }
+
+    // Update history charts
+    updateCharts(cpuVal, memVal);
   }
 
   function updateCharts(cpuVal, memVal) {
@@ -668,25 +655,6 @@
     initCharts();
     setupPolling();
     fetchData();
-  });
-
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) fetchData();
-  });
-
-  document.addEventListener('keydown', (event) => {
-    if (event.target && (event.target.tagName === 'INPUT' || event.target.tagName === 'SELECT' || event.target.tagName === 'TEXTAREA')) {
-      return;
-    }
-    const tabKeys = { '1': 'overview', '2': 'metrics', '3': 'docker', '4': 'nodes', '5': 'rules', '6': 'tui' };
-    if (tabKeys[event.key]) {
-      switchTab(tabKeys[event.key]);
-    }
-    if (event.code === 'Space' && pollSelect) {
-      event.preventDefault();
-      pollSelect.value = pollIntervalMs > 0 ? '0' : '2000';
-      pollSelect.dispatchEvent(new Event('change'));
-    }
   });
 
 })();

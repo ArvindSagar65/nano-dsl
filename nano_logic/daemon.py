@@ -1,12 +1,12 @@
 """Background daemon for monitoring alert rules independently of the UI."""
 
-import time
 import os
 import sys
+import time
 from datetime import datetime
 
 from nano_logic.daemon_lock import acquire_daemon_lock
-from nano_logic.engine import evaluate_active_rules, load_rules, RULES_FILE
+from nano_logic.engine import RULES_FILE, evaluate_active_rules, load_rules
 from nano_logic.logging_config import configure_logging
 from nano_logic.paths import get_logs_dir
 
@@ -23,7 +23,7 @@ def run_daemon():
 
 def _monitor_loop():
     logger.info("Daemon started (pid=%s)", os.getpid())
-    last_mtime = 0
+    last_mtime: float = 0
 
     while True:
         try:

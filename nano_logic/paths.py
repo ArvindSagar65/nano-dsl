@@ -6,6 +6,7 @@ independently-launched daemon agree on where rules.json and rule log
 files live regardless of where either was started from.
 """
 from __future__ import annotations
+
 import os
 from pathlib import Path
 

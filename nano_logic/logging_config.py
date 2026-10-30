@@ -10,6 +10,7 @@ observable signal at all. This gives every module a real logger that
 writes to a file under the state directory instead.
 """
 from __future__ import annotations
+
 import logging
 
 from nano_logic.paths import get_app_log_file

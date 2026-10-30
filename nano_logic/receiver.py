@@ -26,9 +26,11 @@ STALE_THRESHOLD = 120.0
 class NodeStore:
     """Thread-safe storage of reported metrics and metadata for all connected nodes."""
 
-    def __init__(self) -> None:
+    def __init__(self, auto_sync: bool = False) -> None:
         self._lock = threading.Lock()
         self._nodes: dict[str, dict[str, Any]] = {}
+        self.auto_sync = auto_sync
+        self._last_sync_time: float = 0.0
 
     def update_node(self, payload: dict[str, Any]) -> str:
         """Ingest a metrics payload. Returns the resolved node_id."""
@@ -47,26 +49,89 @@ class NodeStore:
         now = time.time()
         with self._lock:
             existing = self._nodes.get(node_id, {})
-            first_seen = existing.get("first_seen", now)
+            first_seen = float(payload.get("first_seen") or existing.get("first_seen", now))
+            last_seen = float(payload.get("last_seen") or now)
             self._nodes[node_id] = {
                 "node_id": node_id,
                 "node_type": payload.get("node_type", "ec2"),
                 "first_seen": first_seen,
-                "last_seen": now,
-                "client_timestamp": payload.get("timestamp", now),
+                "last_seen": last_seen,
+                "client_timestamp": float(payload.get("client_timestamp") or payload.get("timestamp", now)),
                 "metrics": {k: float(v) for k, v in metrics.items() if isinstance(v, (int, float))},
                 "metadata": metadata if isinstance(metadata, dict) else {},
             }
         return node_id
 
+    def sync_from_receiver(
+        self,
+        port: int | None = None,
+        timeout: float = 0.5,
+        force: bool = False,
+    ) -> bool:
+        """If an external receiver is running, sync live nodes from its /metrics endpoint."""
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return False
+        if not self.auto_sync and not force:
+            return False
+
+        server = get_active_server()
+        if server is not None and server.is_running:
+            return True
+
+        now = time.time()
+        last_sync = getattr(self, "_last_sync_time", 0.0)
+        if not force and (now - last_sync) < 1.0:
+            return False
+
+        self._last_sync_time = now
+
+        if port is None:
+            port = int(os.environ.get("NANO_RECEIVER_PORT", "8080"))
+
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                f"http://localhost:{port}/metrics",
+                headers={"User-Agent": "nano-nodestore-sync"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    remote_nodes = data.get("nodes", [])
+                    if isinstance(remote_nodes, list):
+                        with self._lock:
+                            for n in remote_nodes:
+                                if isinstance(n, dict):
+                                    nid = str(n.get("node_id") or "").strip()
+                                    if nid:
+                                        self._nodes[nid] = {
+                                            "node_id": nid,
+                                            "node_type": n.get("node_type", "ec2"),
+                                            "first_seen": float(n.get("first_seen", now)),
+                                            "last_seen": float(n.get("last_seen", now)),
+                                            "client_timestamp": float(n.get("client_timestamp", now)),
+                                            "metrics": {
+                                                k: float(v)
+                                                for k, v in n.get("metrics", {}).items()
+                                                if isinstance(v, (int, float))
+                                            },
+                                            "metadata": n.get("metadata", {}) if isinstance(n.get("metadata"), dict) else {},
+                                        }
+                        return True
+        except Exception:
+            pass
+        return False
+
     def get_node(self, node_id: str) -> dict[str, Any] | None:
         """Return a copy of a single node's data or None."""
+        self.sync_from_receiver()
         with self._lock:
             node = self._nodes.get(node_id)
             return dict(node) if node else None
 
     def list_nodes(self) -> list[dict[str, Any]]:
         """Return snapshot list of all registered nodes sorted by last_seen desc."""
+        self.sync_from_receiver()
         with self._lock:
             nodes = [dict(n) for n in self._nodes.values()]
         nodes.sort(key=lambda n: n.get("last_seen", 0.0), reverse=True)
@@ -86,6 +151,7 @@ class NodeStore:
 
     def get_metric(self, metric_name: str, node_id: str | None = None) -> float | None:
         """Fetch a metric value. If node_id is omitted, checks the most recently active online node."""
+        self.sync_from_receiver()
         with self._lock:
             if node_id:
                 node = self._nodes.get(node_id)
@@ -107,6 +173,7 @@ class NodeStore:
 
     def count_online(self) -> int:
         """Count nodes seen within ONLINE_THRESHOLD."""
+        self.sync_from_receiver()
         now = time.time()
         with self._lock:
             return sum(
@@ -121,7 +188,7 @@ class NodeStore:
 
 
 # Global default store
-GLOBAL_NODE_STORE = NodeStore()
+GLOBAL_NODE_STORE = NodeStore(auto_sync=True)
 
 
 class MetricsHTTPHandler(BaseHTTPRequestHandler):
@@ -227,7 +294,11 @@ class ReceiverServer:
         CustomHandler.store = self.store
         CustomHandler.expected_token = self.auth_token
 
-        self._server = ThreadingHTTPServer((self.host, self.port), CustomHandler)
+        class ReusableThreadingServer(ThreadingHTTPServer):
+            allow_reuse_address = True
+            daemon_threads = True
+
+        self._server = ReusableThreadingServer((self.host, self.port), CustomHandler)
         self._thread: threading.Thread | None = None
         self._is_running = False
 
@@ -279,6 +350,7 @@ def get_active_server() -> ReceiverServer | None:
 def main() -> None:
     """CLI entrypoint to run the standalone receiver server."""
     import argparse
+    import urllib.request
 
     parser = argparse.ArgumentParser(description="nano-dsl Metrics Receiver Server")
     parser.add_argument("--host", default=os.environ.get("NANO_RECEIVER_HOST", "0.0.0.0"), help="Bind host")
@@ -295,7 +367,32 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    server = ReceiverServer(host=args.host, port=args.port, auth_token=args.token)
+    try:
+        server = ReceiverServer(host=args.host, port=args.port, auth_token=args.token)
+    except OSError as err:
+        if getattr(err, "errno", None) == 98 or "already in use" in str(err).lower():
+            # Check if an existing receiver is answering
+            check_host = "localhost" if args.host == "0.0.0.0" else args.host
+            is_our_receiver = False
+            try:
+                with urllib.request.urlopen(f"http://{check_host}:{args.port}/health", timeout=2) as resp:
+                    if resp.status == 200:
+                        is_our_receiver = True
+            except Exception:
+                pass
+
+            if is_our_receiver:
+                print(f"📡 nano-dsl Metrics Receiver is ALREADY ACTIVE and running on http://{args.host}:{args.port}")
+                print("ℹ️  Note: When 'nano-web' or 'nano-dsl' is running, the receiver automatically starts in the background.")
+                print("👉 You don't need to run this command — you can push metrics directly:")
+                print(f"   PYTHONPATH=. ./venv/bin/python -m nano_logic.agent --receiver-url http://localhost:{args.port}/metrics\n")
+                sys.exit(0)
+            else:
+                print(f"❌ Error: Port {args.port} is already in use by another service on your system.", file=sys.stderr)
+                print(f"👉 Try specifying a different port: python -m nano_logic.receiver --port {args.port + 1}\n", file=sys.stderr)
+                sys.exit(1)
+        raise
+
     print(f"📡 nano-dsl Metrics Receiver running on http://{args.host}:{args.port}")
     print("Press Ctrl+C to stop.")
     try:

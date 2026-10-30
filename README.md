@@ -4,17 +4,16 @@ A lightweight system-monitoring toolkit with a custom DSL, a Textual TUI, a back
 
 Commands that change the machine (kill a process, create a rule, start the receiver) run in the **TUI**. The **web UI** is read-only telemetry.
 
-## Features
-
 - **Custom DSL** — Query CPU, memory, disk, GPU, processes, network, sensors, systemd, Docker, and remote EC2 nodes with short dotted commands (`cpu.util`, `docker.ps`, `ec2.list`).
-- **45+ commands** across 11 namespaces, parsed with Lark (LALR).
-- **Alert rules** — `name: alert <metric> <op> <threshold> -> <action>` with operators `>`, `<`, `==`, `>=`, `<=`.
-- **Alert actions** — Built-in `log` (per-rule log file + terminal bell). Plugin actions: `webhook`, `slack`, `discord` (URLs from environment variables).
-- **Background daemon** — Rules persist in `rules.json` (XDG state dir) and keep evaluating after you close the TUI.
-- **Textual TUI** — Live disks/network/system panels, in-app guide, command history, active-rules panel, clipboard copy.
-- **Web dashboard** (`nano-web`) — Overview KPIs, per-core CPU, Docker tables, EC2 fleet cards, live alert status. Standard-library HTTP server; Chart.js loaded from CDN.
-- **EC2 / remote nodes** — `nano-agent` pushes metrics to `nano-receiver`; query with `ec2.list` / `ec2.metrics` / `ec2.info`.
-- **Plugin registry** — Drop-in `PluginBase` modules for commands, numeric probes, and alert actions.
+- **45+ Commands** across 11 namespaces, parsed with Lark (LALR).
+- **Web Observability Dashboard** (`nano-web`) — Overview KPIs, per-core CPU, Docker tables, EC2 fleet cards, live alert status with zero external Python dependencies.
+- **Headless CLI REPL Mode** (`nano-cli`) — Lightweight terminal prompt for remote servers without TUI/graphical dependencies.
+- **Alert Rules & Actions** — `name: alert <metric> <op> <threshold> -> <action>` with operators `>`, `<`, `==`, `>=`, `<=`. Actions include `log`, `webhook`, `slack`, and `discord`.
+- **Background Daemon & Rule Persistence** — Rules persist in `rules.json` (XDG state directory) and evaluate in the background even after you close the TUI.
+- **EC2 & Remote Node Monitoring** — `nano-agent` pushes metrics to `nano-receiver`; query with `ec2.list`, `ec2.metrics`, `ec2.info`.
+- **Interactive Textual TUI** — Live disks/network/system panels, in-app guide, command history, active-rules panel, and clipboard copy.
+- **Plugin Registry** — Drop-in `PluginBase` modules for custom commands, numeric probes, and alert actions.
+- **Comprehensive Test Suite** — 304+ automated unit and integration tests passing at 100%.
 
 ## Getting Started
 
@@ -128,7 +127,107 @@ Repeated fires are suppressed for 60 seconds while a condition stays true, then 
 
 **EC2:** `ec2.list` · `ec2.metrics [id]` · `ec2.info [id]` · `ec2.server [start\|stop]`
 
+<<<<<<< HEAD
+| Command | Description |
+|---------|-------------|
+| `mem.util` | Current memory utilization percentage |
+| `mem.stats` | Memory details (used, available, total, swap %) |
+| `mem.swap` | Detailed swap memory statistics |
+| `mem.top` | Top 5 processes by memory usage |
+| `mem.cached` | Cached and buffers memory in GiB |
+
+### Disk Commands
+
+| Command | Description |
+|---------|-------------|
+| `disk.free` | Free and total disk space for root filesystem (/) |
+| `disk.usage` | Disk usage percentage for all mounted partitions |
+| `disk.io` | Disk I/O statistics (read/write counts and bytes) |
+| `disk.top` | Top directories by storage usage |
+| `disk.inode` | Inode usage on root filesystem |
+
+### GPU Commands
+
+| Command | Description |
+|---------|-------------|
+|`gpu.util` | GPU utilization and memory (NVIDIA) |
+
+### Process Commands
+
+| Command | Description |
+|---------|-------------|
+| `proc.list` | List all running processes with PIDs |
+| `proc.kill <pid>` | Terminate a process by PID (e.g., `proc.kill 1234`) |
+| `proc.search <name>`	| Find processes by name substring |
+| `proc.tree` |	Process tree view (via ps auxf) |
+| `proc.info <pid>`	| Detailed info (CPU, memory, threads, cmdline) for a PID |
+
+### Network Commands
+
+| Command | Description |
+|---------|-------------|
+| `net.interfaces` | List all network interfaces and their status |
+| `net.bandwidth` | Total network bandwidth (sent/received bytes and packets) |
+| `net.connections` | Active network connections (total, established, listening) |
+| `net.ports`	| List all listening TCP ports |
+| `net.dns <host>`	| DNS lookup for a hostname |
+
+### System Commands
+
+| Command | Description |
+|---------|-------------|
+| `system.uptime` | System uptime in days, hours, and minutes |
+| `system.info` | OS, hostname, kernel, and processor information |
+| `system.processes` | Total process and thread count |
+| `system.users` | Currently logged-in users |
+| `system.load` | Quick CPU + RAM + load snapshot |
+
+### Sensor Commands
+
+| Command | Description |
+|---------|-------------|
+|`sensor.temp` | CPU and device temperatures with thresholds |
+|`sensor.fans` | Fan speeds in RPM |
+|`sensor.battery` | Battery percentage and charging status\
+
+### Docker Commands
+
+| Command | Description |
+|---------|-------------|
+|`docker.ps` | List running Docker containers |
+|`docker.stats` | Live CPU/memory stats for containers |
+
+### Service Commands
+
+| Command | Description |
+|---------|-------------|
+|`service.list` | List running systemd services |
+|`service.status <name>` | Status and logs for a specific service |
+
+### EC2 & Remote Node Commands
+
+| Command | Description |
+|---------|-------------|
+|`ec2.list` | List all connected remote nodes with live metrics and status |
+|`ec2.metrics [id]` | Detailed metric breakdown for a node (CPU, Memory, Disk, Network) |
+|`ec2.info [id]` | AWS metadata and node configuration (Instance Type, AZ, IPs, Uptime) |
+|`ec2.server [start\|stop]` | Check or manage the metrics receiver server |
+
+**Alertable EC2 metrics:** `ec2.cpu.util`, `ec2.mem.util`, `ec2.disk.usage`, `ec2.nodes.online`
+
+### Utility Commands
+
+| Command | Description |
+|---------|-------------|
+|`help` | Show all available commands with descriptions |
+|`rules` | List all active alert rules |
+|`status` | System overview (CPU, RAM, disk, uptime, rules) |
+|`clear` | Clear the command console |
+|`history` | Show command history (use up/down arrows) |
+|`guide` | Show the in-app command guide |
+=======
 **Rules:** `disk_alert: alert disk.free < 5 -> log` · `alert ec2.cpu.util > 80 -> webhook` · `stop rule disk_alert`
+>>>>>>> upstream/main
 
 ---
 
@@ -279,6 +378,43 @@ nano-dsl/
 ├── requirements.txt
 ├── pyproject.toml          # entry points: nano-dsl, nano-web, nano-agent, nano-receiver
 ├── nano_logic/
+<<<<<<< HEAD
+│   ├── __init__.py
+│   ├── agent.py             # EC2 telemetry agent (deploy on remote nodes)
+│   ├── receiver.py          # HTTP metrics receiver & NodeStore
+│   ├── web.py               # Web Observability server & REST API
+│   ├── dashboard.py         # Main Textual TUI application (Frontend)
+│   ├── daemon.py            # Independent background monitoring process
+│   ├── dsl.py              # DSL parser and executor (Lark-based)
+│   ├── engine.py           # Background rule evaluation engine
+│   ├── models.py           # Core data structures (Rules, etc.)
+│   ├── monitoring/
+│   │   ├── __init__.py
+│   │   └── probes.py       # System metric collection functions
+│   ├── plugins/
+│   │   ├── __init__.py      # Plugin registry & discovery
+│   │   ├── base.py          # Plugin base class
+│   │   ├── ec2_plugin.py    # EC2/remote node DSL commands & probes
+│   │   ├── docker_plugin.py # Docker container introspection
+│   │   ├── webhook_plugin.py # Generic webhook alert action
+│   │   ├── discord_plugin.py # Discord webhook action
+│   │   └── slack_plugin.py  # Slack webhook action
+│   └── ui/
+│       ├── __init__.py
+│       ├── guide.py        # In-app command guide
+│       └── web/            # Web Dashboard frontend (HTML/CSS/JS)
+│           ├── index.html
+│           ├── dashboard.css
+│           └── dashboard.js
+└── tests/
+    ├── test_dsl.py          # DSL & engine test suite
+    ├── test_ec2_agent.py    # EC2 agent, receiver & integration tests
+    ├── test_web.py          # Web dashboard & REST API tests
+    ├── test_docker.py       # Docker probe tests
+    ├── test_plugins.py      # Plugin discovery & routing tests
+    └── test_actions.py      # Webhook action tests
+
+=======
 │   ├── dashboard.py        # Textual TUI (`nano-dsl`, optional --web)
 │   ├── web.py              # Web UI + REST (`nano-web`)
 │   ├── daemon.py           # Background rule evaluator
@@ -292,6 +428,7 @@ nano-dsl/
 │       ├── guide.py        # TUI sidebar guide
 │       └── web/            # index.html, dashboard.css, dashboard.js
 └── tests/
+>>>>>>> upstream/main
 ```
 
 ### Adding a command
@@ -303,6 +440,112 @@ nano-dsl/
 5. Tests in `tests/`  
 
 **Adding a plugin:** subclass `PluginBase` in `nano_logic/plugins/`, expose `Plugin = YourClass`. Discovery registers `command_handlers`, `probe_registry`, and `action_registry` on import.
+
+---
+
+## Web Observability Dashboard (Portainer & Grafana Style)
+
+nano-dsl includes a modern, high-performance web dashboard inspired by Portainer and Grafana for visual, real-time observability across your host system, Docker daemon, EC2 fleet, and alert rules.
+
+### Key Capabilities
+
+- 📊 **Overview Dashboard**: High-level KPI summary cards (CPU %, RAM %, Disk %, Docker containers count, EC2 nodes count, firing alert rules) paired with real-time history charts.
+- ⚡ **System Metrics Explorer**: Real-time per-core CPU utilization cards, load averages (1m, 5m, 15m), memory & swap breakdown, disk partition storage progress bars, network traffic throughput & active sockets, hardware sensors (temperatures, battery), and top processes by CPU and Memory.
+- 🐳 **Docker Engine View (Portainer-Style)**: Live container cards and interactive searchable data table (State badges, container names, image tags, IDs, port mappings, status), Docker images explorer, and daemon metadata.
+- ☁️ **EC2 & Remote Fleet Grid**: Multi-node telemetry cards displaying IMDSv2 metadata (Instance ID, Type, AZ, Public/Private IPs), online/stale/offline status pills, and pushed metrics.
+- 🚨 **Alert Rules Console**: Real-time evaluation matrix showing each rule's current target metric value against thresholds (Normal vs Alerting), action targets (`log`, `slack`, `discord`, `webhook`), and a live streaming alert history log.
+- 💻 **TUI Execution Isolation**: Command and script execution remains strictly inside the terminal TUI (`nano-dsl`) for local safety and process isolation, with an interactive syntax guide built into the web UI.
+- ⚡ **Zero External Dependencies**: Built entirely with Python's standard library `http.server.ThreadingHTTPServer` and modern vanilla HTML5/CSS/JS.
+
+### Launching the Web Dashboard
+
+**Option A — Standalone CLI:**
+```bash
+nano-web --port 5000
+# or
+python -m nano_logic.web --port 5000
+```
+Open [http://localhost:5000](http://localhost:5000) in your browser.
+
+**Option B — Together with the TUI:**
+```bash
+nano-dsl --web
+# Launches the TUI in your terminal and starts the web dashboard in the background!
+```
+
+### REST API Endpoints
+
+The web server exposes clean REST endpoints queryable by any HTTP client:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | `GET` | Portainer / Grafana style Web UI |
+| `/health` | `GET` | Service health status |
+| `/api/v1/overview` | `GET` | Consolidated high-speed telemetry snapshot |
+| `/api/v1/metrics` | `GET` | Host system metrics, per-core CPU, disk partitions, sensors |
+| `/api/v1/rules` | `GET` | Active alert rules, evaluation status, and recent alert logs |
+| `/api/v1/docker` | `GET` | Docker daemon state, container list, stats, and images |
+| `/api/v1/nodes` | `GET` | Remote EC2 / agent nodes from `NodeStore` |
+
+---
+
+## EC2 & Remote Node Monitoring
+
+nano-dsl can monitor remote EC2 instances (or any Linux server) in real-time using a lightweight push-based agent architecture.
+
+### Quick Start
+
+**1. Start the receiver** (on your local/central machine — auto-started when DSL loads):
+```bash
+# Standalone mode (optional, the dashboard auto-starts it):
+python -m nano_logic.receiver --port 8080
+```
+
+**2. Deploy the agent on your EC2 instance:**
+```bash
+# On the EC2 instance:
+pip install nano-dsl   # or clone the repo
+
+# Start pushing metrics:
+nano-agent --receiver-url http://<YOUR_IP>:8080/metrics --interval 5
+
+# Or use environment variables:
+export NANO_RECEIVER_URL=http://<YOUR_IP>:8080/metrics
+export NANO_PUSH_INTERVAL=5
+nano-agent
+```
+
+**3. Query from the dashboard:**
+```
+ec2.list               # See all connected nodes
+ec2.metrics            # Detailed metrics for the latest node
+ec2.metrics i-abc123   # Metrics for a specific instance
+ec2.info               # AWS metadata (Instance Type, AZ, IPs)
+```
+
+**4. Set alerts on remote metrics:**
+```
+alert ec2.cpu.util > 80 -> webhook
+alert ec2.mem.util > 90 -> discord
+alert ec2.disk.usage > 85 -> log
+```
+
+### Agent Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NANO_RECEIVER_URL` | `http://localhost:8080/metrics` | Receiver endpoint URL |
+| `NANO_PUSH_INTERVAL` | `5` | Push interval in seconds |
+| `NANO_NODE_ID` | Auto (IMDSv2 or hostname) | Override node identifier |
+| `NANO_AUTH_TOKEN` | None | Optional auth token for push/pull |
+
+### AWS EC2 Auto-Detection
+
+When running on EC2, the agent automatically probes [IMDSv2](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html) for:
+- Instance ID, Instance Type, Availability Zone, Region
+- Public and Private IPv4 addresses
+
+If not on EC2, it gracefully falls back to local hostname and platform info.
 
 ---
 

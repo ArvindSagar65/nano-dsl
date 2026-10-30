@@ -7,6 +7,7 @@ spawning) is inherently check-then-act and can't be made atomic; an
 flock() on a shared file is a kernel-arbitrated mutex and is.
 """
 from __future__ import annotations
+
 import fcntl
 import os
 from contextlib import contextmanager

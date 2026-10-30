@@ -3,23 +3,24 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Nano-DSL — Observability Dashboard</title>
-  <meta name="description" content="Live host, Docker, EC2, and alert monitoring for nano-dsl. Companion web UI to the terminal TUI.">
+  <title>Nano-DSL — Cloud & System Observability Dashboard</title>
+  <meta name="description" content="Portainer and Grafana inspired live monitoring dashboard for nano-dsl, featuring system metrics, Docker containers, EC2 telemetry, and alert rules.">
+  <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/dashboard.css">
-  <!-- Chart.js from CDN with local SVG fallback -->
+  <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
 <body>
   <!-- Top Navigation Header -->
   <header class="top-nav">
     <div class="brand">
-      <div class="brand-icon">N</div>
+      <div class="brand-icon">N∆</div>
       <div>
-        <div class="brand-title">nano-dsl <span class="brand-title-muted">observability</span></div>
-        <div class="brand-subtitle">Host · Docker · EC2 · Alerts</div>
+        <div class="brand-title">nano-dsl <span>observability</span></div>
+        <div class="brand-subtitle">Telemetry &amp; Cloud Dashboard</div>
       </div>
     </div>
 
@@ -29,11 +30,9 @@
         <span id="live-status-text">LIVE</span>
       </div>
 
-      <div class="tui-badge" title="Mutating DSL commands run only in the terminal TUI">
-        <span>TUI execution</span>
+      <div class="tui-badge" title="DSL command execution happens via the terminal TUI">
+        <span>⚡ TUI Execution Mode Active</span>
       </div>
-
-      <div class="clock-chip" id="last-updated" title="Last successful poll">—</div>
 
       <div class="refresh-control">
         <span>Poll:</span>
@@ -50,30 +49,28 @@
 
   <!-- Tab Navigation -->
   <nav class="tabs-bar">
-    <button class="tab-btn active" data-tab="overview" type="button">
-      <span>Overview</span>
+    <button class="tab-btn active" data-tab="overview">
+      <span>📊 Overview</span>
     </button>
-    <button class="tab-btn" data-tab="metrics" type="button">
-      <span>System</span>
+    <button class="tab-btn" data-tab="metrics">
+      <span>⚡ System Metrics</span>
     </button>
-    <button class="tab-btn" data-tab="docker" type="button">
-      <span>Docker</span>
+    <button class="tab-btn" data-tab="docker">
+      <span>🐳 Docker</span>
       <span class="tab-badge" id="docker-tab-count">0</span>
     </button>
-    <button class="tab-btn" data-tab="nodes" type="button">
-      <span>EC2</span>
+    <button class="tab-btn" data-tab="nodes">
+      <span>☁️ EC2 & Nodes</span>
       <span class="tab-badge" id="nodes-tab-count">0</span>
     </button>
-    <button class="tab-btn" data-tab="rules" type="button">
-      <span>Alerts</span>
+    <button class="tab-btn" data-tab="rules">
+      <span>🚨 Alert Rules</span>
       <span class="tab-badge" id="rules-tab-count">0</span>
     </button>
-    <button class="tab-btn" data-tab="tui" type="button">
-      <span>TUI Guide</span>
+    <button class="tab-btn" data-tab="tui">
+      <span>💻 TUI Console Guide</span>
     </button>
   </nav>
-
-  <div id="error-banner" class="error-banner hidden" role="alert"></div>
 
   <!-- Main Content Body -->
   <main class="main-content">
@@ -484,16 +481,8 @@
             <button class="copy-btn" onclick="navigator.clipboard.writeText('docker.ps')">Copy</button>
           </div>
           <div class="cmd-block">
-            <span>nano-dsl --web</span>
-            <button class="copy-btn" type="button" onclick="navigator.clipboard.writeText('nano-dsl --web')">Copy</button>
-          </div>
-          <div class="cmd-block">
-            <span>docker.info</span>
-            <button class="copy-btn" type="button" onclick="navigator.clipboard.writeText('docker.info')">Copy</button>
-          </div>
-          <div class="cmd-block">
-            <span>ec2.metrics</span>
-            <button class="copy-btn" type="button" onclick="navigator.clipboard.writeText('ec2.metrics')">Copy</button>
+            <span>ec2.list</span>
+            <button class="copy-btn" onclick="navigator.clipboard.writeText('ec2.list')">Copy</button>
           </div>
           <div class="cmd-block">
             <span>high_cpu: alert cpu.util &gt; 80 -&gt; log</span>
@@ -512,11 +501,6 @@
     </section>
 
   </main>
-
-  <footer class="app-footer">
-    <span>nano-dsl web dashboard · commands run in the TUI</span>
-    <span class="footer-hint">1–6 switch tabs · space pauses polling</span>
-  </footer>
 
   <!-- Dashboard JavaScript Application -->
   <script src="/dashboard.js"></script>

@@ -6,6 +6,7 @@ Integrates with the Metrics Receiver to provide:
 """
 from __future__ import annotations
 
+import os
 import time
 from datetime import datetime
 from typing import Any
@@ -77,10 +78,12 @@ class EC2Plugin(PluginBase):
 
     def handle_list(self, *args) -> str:
         """Render a table of all reporting EC2 nodes."""
+        if hasattr(self.store, "sync_from_receiver"):
+            self.store.sync_from_receiver(force=True)
         nodes = self.store.list_nodes()
         if not nodes:
             server = get_active_server()
-            port = server.port if server else 8080
+            port = server.port if server else int(os.environ.get("NANO_RECEIVER_PORT", "8080"))
             return (
                 "No remote nodes reporting yet.\n"
                 f"Receiver endpoint is active on http://0.0.0.0:{port}/metrics\n\n"
@@ -116,6 +119,8 @@ class EC2Plugin(PluginBase):
         return "\n".join(lines)
 
     def _resolve_target_node(self, children: tuple) -> dict[str, Any] | None:
+        if hasattr(self.store, "sync_from_receiver"):
+            self.store.sync_from_receiver(force=True)
         nodes = self.store.list_nodes()
         if not nodes:
             return None

@@ -20,7 +20,7 @@ from typing import Any
 
 import psutil
 
-from nano_logic.engine import ACTIVE_RULES, RULES_FILE, fetch_metric_value, load_rules
+from nano_logic.engine import ACTIVE_RULES, fetch_metric_value, load_rules
 from nano_logic.logging_config import configure_logging
 from nano_logic.monitoring.probes import (
     get_top_processes_by_cpu,
@@ -36,48 +36,38 @@ WEB_DIR = Path(__file__).resolve().parent / "ui" / "web"
 
 _BOOT_TIME = psutil.boot_time() if hasattr(psutil, "boot_time") else time.time()
 
-# Warm the non-blocking CPU sampler so the first dashboard poll is not 0.0%.
-psutil.cpu_percent(interval=None)
-psutil.cpu_percent(interval=None, percpu=True)
+
+_LAST_SENSOR_READ: float = 0.0
+_CACHED_TEMPS: dict[str, list[dict[str, Any]]] = {}
 
 
-class _TtlCache:
-    """Tiny in-process TTL cache for expensive collectors (Docker CLI, sockets)."""
-
-    def __init__(self, ttl_seconds: float) -> None:
-        self.ttl_seconds = ttl_seconds
-        self._value: Any = None
-        self._expires_at = 0.0
-
-    def get(self, factory):
-        now = time.time()
-        if self._value is not None and now < self._expires_at:
-            return self._value
-        self._value = factory()
-        self._expires_at = now + self.ttl_seconds
-        return self._value
-
-
-_docker_cache = _TtlCache(4.0)
-_conn_cache = _TtlCache(5.0)
-_alert_log_cache = _TtlCache(3.0)
-_rules_file_mtime = 0.0
+def _refresh_sensors_worker() -> None:
+    global _LAST_SENSOR_READ, _CACHED_TEMPS
+    try:
+        if hasattr(psutil, "sensors_temperatures"):
+            raw = psutil.sensors_temperatures()
+            if raw:
+                _CACHED_TEMPS = {
+                    name: [
+                        {"label": s.label or name, "current": s.current, "high": s.high, "critical": s.critical}
+                        for s in entries
+                    ]
+                    for name, entries in raw.items()
+                }
+    except Exception:
+        pass
+    _LAST_SENSOR_READ = time.time()
 
 
-def _reload_rules_if_changed() -> None:
-    """Reload rules.json only when it actually changed on disk."""
-    global _rules_file_mtime
-    if not RULES_FILE.exists():
-        return
-    mtime = RULES_FILE.stat().st_mtime
-    if mtime != _rules_file_mtime:
-        load_rules()
-        _rules_file_mtime = mtime
+def _get_cached_temperatures() -> dict[str, list[dict[str, Any]]]:
+    """Return cached temperature readings immediately without blocking on hwmon latency."""
+    global _LAST_SENSOR_READ
+    now = time.time()
+    if now - _LAST_SENSOR_READ > 15.0:
+        _LAST_SENSOR_READ = now  # debounce
+        threading.Thread(target=_refresh_sensors_worker, daemon=True).start()
+    return _CACHED_TEMPS
 
-
-# ──────────────────────────────────────────────
-#  Data Collector Functions
-# ──────────────────────────────────────────────
 
 def get_system_metrics_payload() -> dict[str, Any]:
     """Collect comprehensive local host metrics."""
@@ -141,26 +131,15 @@ def get_system_metrics_payload() -> dict[str, Any]:
     except Exception:
         pass
 
-    def _count_connections() -> int:
-        try:
-            return len(psutil.net_connections())
-        except Exception:
-            return 0
-
-    conns_count = _conn_cache.get(_count_connections)
-
-    # Sensors (Temperature, Battery)
-    temperatures: dict[str, list[dict[str, Any]]] = {}
+    conns_count = 0
     try:
-        temps = psutil.sensors_temperatures() if hasattr(psutil, "sensors_temperatures") else {}
-        if temps:
-            for name, entries in temps.items():
-                temperatures[name] = [
-                    {"label": s.label or name, "current": s.current, "high": s.high, "critical": s.critical}
-                    for s in entries
-                ]
+        conns = psutil.net_connections()
+        conns_count = len(conns)
     except Exception:
         pass
+
+    # Sensors (Temperature, Battery) - cached to avoid hwmon bus latency
+    temperatures = _get_cached_temperatures()
 
     battery = None
     try:
@@ -245,7 +224,7 @@ def get_system_metrics_payload() -> dict[str, Any]:
 
 def get_rules_payload() -> dict[str, Any]:
     """Collect active alert rules, their current evaluation status, and alert history."""
-    _reload_rules_if_changed()
+    load_rules()
     rules_data = []
     ops = {
         ">": lambda v, t: v > t,
@@ -280,40 +259,38 @@ def get_rules_payload() -> dict[str, Any]:
             "status": "alerting" if is_firing else "normal",
         })
 
-    def _read_recent_alerts() -> list[dict[str, Any]]:
-        logs: list[dict[str, Any]] = []
-        logs_dir = get_logs_dir()
-        if not logs_dir.exists():
-            return logs
+    # Recent alert logs
+    logs: list[dict[str, Any]] = []
+    logs_dir = get_logs_dir()
+    if logs_dir.exists():
         for log_file in logs_dir.glob("*.log"):
+            rule_name = log_file.stem
             try:
-                lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()[-15:]
-            except OSError:
+                # Read last 15 lines
+                lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                for line in lines[-15:]:
+                    if "[ALERT]" in line:
+                        logs.append({
+                            "rule": rule_name,
+                            "raw": line,
+                            "timestamp": line[1:20] if line.startswith("[") and len(line) >= 20 else "",
+                            "message": line.split("] ", 1)[-1] if "] " in line else line,
+                        })
+            except Exception:
                 continue
-            for line in lines:
-                if "[ALERT]" not in line:
-                    continue
-                logs.append({
-                    "rule": log_file.stem,
-                    "raw": line,
-                    "timestamp": line[1:20] if line.startswith("[") and len(line) >= 20 else "",
-                    "message": line.split("] ", 1)[-1] if "] " in line else line,
-                })
-        logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-        return logs[:30]
 
-    logs = _alert_log_cache.get(_read_recent_alerts)
+    logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
 
     return {
         "rules": rules_data,
         "total_rules": len(rules_data),
         "firing_rules": firing_count,
-        "recent_alerts": logs,
+        "recent_alerts": logs[:30],
     }
 
 
-def _collect_docker_payload() -> dict[str, Any]:
-    """Uncached Docker collector — CLI/SDK round-trips are relatively slow."""
+def get_docker_payload() -> dict[str, Any]:
+    """Collect Docker daemon state, container list, container stats, and images."""
     installed = docker_probe.is_docker_installed()
     reachable = docker_probe.is_daemon_reachable() if installed else False
 
@@ -352,15 +329,37 @@ def _collect_docker_payload() -> dict[str, Any]:
     }
 
 
-def get_docker_payload() -> dict[str, Any]:
-    """Collect Docker daemon state, with a short TTL so the UI can poll often."""
-    return _docker_cache.get(_collect_docker_payload)
-
-
 def get_nodes_payload(store: NodeStore | None = None) -> dict[str, Any]:
     """Collect EC2 and remote node telemetry from the NodeStore."""
+    is_custom_store = store is not None
     ns = store or GLOBAL_NODE_STORE
+
+    # If using default GLOBAL_NODE_STORE, query active Receiver on port 8080 to sync live nodes
+    if not is_custom_store:
+        receiver_port = int(os.environ.get("NANO_RECEIVER_PORT", "8080"))
+        receiver_url = f"http://localhost:{receiver_port}/metrics"
+        try:
+            import urllib.request
+            req = urllib.request.Request(receiver_url, headers={"User-Agent": "nano-web-dashboard"})
+            with urllib.request.urlopen(req, timeout=1.0) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    remote_nodes = data.get("nodes", [])
+                    if isinstance(remote_nodes, list):
+                        for n in remote_nodes:
+                            if isinstance(n, dict):
+                                ns.update_node({
+                                    "node_id": n.get("node_id"),
+                                    "node_type": n.get("node_type", "ec2"),
+                                    "timestamp": n.get("client_timestamp"),
+                                    "metadata": n.get("metadata", {}),
+                                    "metrics": n.get("metrics", {}),
+                                })
+        except Exception:
+            pass
+
     nodes = ns.list_nodes()
+
     now = time.time()
 
     enriched_nodes = []
@@ -399,9 +398,8 @@ def get_nodes_payload(store: NodeStore | None = None) -> dict[str, Any]:
 
 
 def get_overview_payload(store: NodeStore | None = None) -> dict[str, Any]:
-    """Cheap KPI snapshot. Avoids process/top scans used by the full metrics API."""
-    vm = psutil.virtual_memory()
-    disk = psutil.disk_usage("/")
+    """Collect a consolidated overview payload for high-speed dashboard polling."""
+    sys_metrics = get_system_metrics_payload()
     rules_info = get_rules_payload()
     docker_info = get_docker_payload()
     nodes_info = get_nodes_payload(store)
@@ -409,12 +407,12 @@ def get_overview_payload(store: NodeStore | None = None) -> dict[str, Any]:
     return {
         "timestamp": time.time(),
         "system": {
-            "hostname": platform.node(),
-            "uptime_seconds": round(max(0.0, time.time() - _BOOT_TIME), 1),
-            "cpu_percent": psutil.cpu_percent(interval=None),
-            "memory_percent": vm.percent,
-            "disk_percent": disk.percent,
-            "process_count": len(psutil.pids()),
+            "hostname": sys_metrics["system"]["hostname"],
+            "uptime_seconds": sys_metrics["system"]["uptime_seconds"],
+            "cpu_percent": sys_metrics["cpu"]["util_percent"],
+            "memory_percent": sys_metrics["memory"]["percent"],
+            "disk_percent": sys_metrics["disk"]["root_usage_percent"],
+            "process_count": sys_metrics["processes"]["total_count"],
         },
         "docker": {
             "reachable": docker_info["daemon_reachable"],
@@ -447,7 +445,7 @@ class WebDashboardHTTPHandler(BaseHTTPRequestHandler):
             logger.warning(format, *args)
 
     def _send_json(self, status_code: int, data: Any) -> None:
-        body = json.dumps(data, separators=(",", ":")).encode("utf-8")
+        body = json.dumps(data, indent=2).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -601,15 +599,48 @@ class WebServer:
 _ACTIVE_WEB_SERVER: WebServer | None = None
 
 
+def _find_free_port(host: str, start_port: int, max_tries: int = 20) -> int:
+    """Return the first TCP port >= start_port that is not already bound.
+
+    Raises RuntimeError if no free port is found within *max_tries* attempts.
+    """
+    import socket as _socket
+
+    for offset in range(max_tries):
+        candidate = start_port + offset
+        try:
+            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as sock:
+                sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+                sock.bind((host, candidate))
+            return candidate
+        except OSError:
+            continue
+    raise RuntimeError(
+        f"Could not find a free port in range {start_port}–{start_port + max_tries - 1}. "
+        "Kill stale processes or specify a different base port."
+    )
+
+
 def get_or_start_web_server(
     host: str = "0.0.0.0",
     port: int = 5000,
     store: NodeStore | None = None,
 ) -> WebServer:
-    """Get the running web server instance or start one in the background."""
+    """Get the running web server instance or start one in the background.
+
+    If *port* is already occupied the server automatically binds to the next
+    available port so the caller never has to handle EADDRINUSE.
+    """
     global _ACTIVE_WEB_SERVER
     if _ACTIVE_WEB_SERVER is None or not _ACTIVE_WEB_SERVER.is_running:
-        _ACTIVE_WEB_SERVER = WebServer(host=host, port=port, store=store)
+        free_port = _find_free_port(host, port)
+        if free_port != port:
+            logger.warning(
+                "Port %d is in use; web dashboard starting on port %d instead.",
+                port,
+                free_port,
+            )
+        _ACTIVE_WEB_SERVER = WebServer(host=host, port=free_port, store=store)
         _ACTIVE_WEB_SERVER.start_background()
     return _ACTIVE_WEB_SERVER
 
@@ -639,22 +670,27 @@ def main() -> None:
 
     if args.with_receiver:
         get_or_start_receiver()
-        print("Telemetry receiver active on http://0.0.0.0:8080/metrics")
+        print("📡 Telemetry receiver active on http://0.0.0.0:8080/metrics")
 
     try:
-        server = WebServer(host=args.host, port=args.port)
-    except OSError as err:
-        if getattr(err, "errno", None) in (98, 10048) or "address already in use" in str(err).lower():
-            print(f"Error: Port {args.port} is already in use.", file=sys.stderr)
-            print(f"Try: python -m nano_logic.web --port {args.port + 50}", file=sys.stderr)
-            sys.exit(1)
-        raise
+        actual_port = _find_free_port(args.host, args.port)
+    except RuntimeError as err:
+        print(f"❌ {err}", file=sys.stderr)
+        sys.exit(1)
 
-    url_host = "localhost" if args.host == "0.0.0.0" else args.host
+    if actual_port != args.port:
+        print(
+            f"⚠️  Port {args.port} is already in use. Starting on port {actual_port} instead.",
+            file=sys.stderr,
+        )
+
+    server = WebServer(host=args.host, port=actual_port)
+
+    display_host = args.host if args.host != "0.0.0.0" else "localhost"
     print("=" * 64)
-    print("  nano-dsl Web Observability Dashboard")
-    print(f"  URL: http://{url_host}:{args.port}")
-    print("  TUI commands still run via 'nano-dsl'")
+    print("  🚀 nano-dsl Web Observability Dashboard")
+    print(f"  🌐 URL: http://{display_host}:{actual_port}")
+    print("  💻 TUI command execution remains active via 'nano-dsl'")
     print("=" * 64)
     print("Press Ctrl+C to stop.")
 

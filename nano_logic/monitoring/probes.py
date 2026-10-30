@@ -4,9 +4,11 @@ All functions in this module should be pure data gatherers:
 they read a metric and return it, no formatting or display logic.
 """
 from __future__ import annotations
+
 import os
 import socket
 import subprocess
+
 import psutil
 
 # ──────────────────────────────────────────────

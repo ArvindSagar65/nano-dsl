@@ -20,6 +20,7 @@ dev = ["pytest", "mypy", "ruff"]
 
 [project.scripts]
 nano-dsl = "nano_logic.dashboard:main"
+nano-cli = "nano_logic.cli:main"
 nano-agent = "nano_logic.agent:main"
 nano-receiver = "nano_logic.receiver:main"
 nano-web = "nano_logic.web:main"
