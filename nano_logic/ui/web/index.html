@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nano-DSL — Cloud & System Observability Dashboard</title>
+  <meta name="description" content="Portainer and Grafana inspired live monitoring dashboard for nano-dsl, featuring system metrics, Docker containers, EC2 telemetry, and alert rules.">
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/dashboard.css">
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <!-- Top Navigation Header -->
+  <header class="top-nav">
+    <div class="brand">
+      <div class="brand-icon">N∆</div>
+      <div>
+        <div class="brand-title">nano-dsl <span>observability</span></div>
+        <div class="brand-subtitle">Telemetry &amp; Cloud Dashboard</div>
+      </div>
+    </div>
+
+    <div class="nav-actions">
+      <div class="live-indicator">
+        <div class="pulse-dot"></div>
+        <span id="live-status-text">LIVE</span>
+      </div>
+
+      <div class="tui-badge" title="DSL command execution happens via the terminal TUI">
+        <span>⚡ TUI Execution Mode Active</span>
+      </div>
+
+      <div class="refresh-control">
+        <span>Poll:</span>
+        <select id="poll-interval-select" class="refresh-select">
+          <option value="1000">1s</option>
+          <option value="2000" selected>2s</option>
+          <option value="5000">5s</option>
+          <option value="10000">10s</option>
+          <option value="0">Pause</option>
+        </select>
+      </div>
+    </div>
+  </header>
+
+  <!-- Tab Navigation -->
+  <nav class="tabs-bar">
+    <button class="tab-btn active" data-tab="overview">
+      <span>📊 Overview</span>
+    </button>
+    <button class="tab-btn" data-tab="metrics">
+      <span>⚡ System Metrics</span>
+    </button>
+    <button class="tab-btn" data-tab="docker">
+      <span>🐳 Docker</span>
+      <span class="tab-badge" id="docker-tab-count">0</span>
+    </button>
+    <button class="tab-btn" data-tab="nodes">
+      <span>☁️ EC2 & Nodes</span>
+      <span class="tab-badge" id="nodes-tab-count">0</span>
+    </button>
+    <button class="tab-btn" data-tab="rules">
+      <span>🚨 Alert Rules</span>
+      <span class="tab-badge" id="rules-tab-count">0</span>
+    </button>
+    <button class="tab-btn" data-tab="tui">
+      <span>💻 TUI Console Guide</span>
+    </button>
+  </nav>
+
+  <!-- Main Content Body -->
+  <main class="main-content">
+
+    <!-- ==================== TAB 1: OVERVIEW ==================== -->
+    <section id="tab-overview" class="tab-content active">
+      <!-- KPI Row -->
+      <div class="kpi-grid">
+        <div class="kpi-card cyan">
+          <div class="kpi-header">
+            <span>CPU Utilization</span>
+            <span class="kpi-icon">⚡</span>
+          </div>
+          <div class="kpi-value" id="kpi-cpu">--%</div>
+          <div class="progress-bar-container">
+            <div class="progress-bar-fill fill-cyan" id="bar-cpu" style="width: 0%;"></div>
+          </div>
+          <div class="kpi-subtext" id="kpi-cpu-sub">Load: --, --, --</div>
+        </div>
+
+        <div class="kpi-card purple">
+          <div class="kpi-header">
+            <span>Memory Usage</span>
+            <span class="kpi-icon">💾</span>
+          </div>
+          <div class="kpi-value" id="kpi-mem">--%</div>
+          <div class="progress-bar-container">
+            <div class="progress-bar-fill fill-purple" id="bar-mem" style="width: 0%;"></div>
+          </div>
+          <div class="kpi-subtext" id="kpi-mem-sub">-- GB / -- GB</div>
+        </div>
+
+        <div class="kpi-card green">
+          <div class="kpi-header">
+            <span>Disk Usage (/)</span>
+            <span class="kpi-icon">📁</span>
+          </div>
+          <div class="kpi-value" id="kpi-disk">--%</div>
+          <div class="progress-bar-container">
+            <div class="progress-bar-fill fill-green" id="bar-disk" style="width: 0%;"></div>
+          </div>
+          <div class="kpi-subtext" id="kpi-disk-sub">-- GB free</div>
+        </div>
+
+        <div class="kpi-card blue">
+          <div class="kpi-header">
+            <span>Docker Containers</span>
+            <span class="kpi-icon">🐳</span>
+          </div>
+          <div class="kpi-value" id="kpi-docker">--</div>
+          <div class="kpi-subtext" id="kpi-docker-sub">-- running / -- total</div>
+        </div>
+
+        <div class="kpi-card amber">
+          <div class="kpi-header">
+            <span>EC2 / Remote Nodes</span>
+            <span class="kpi-icon">☁️</span>
+          </div>
+          <div class="kpi-value" id="kpi-nodes">--</div>
+          <div class="kpi-subtext" id="kpi-nodes-sub">-- online</div>
+        </div>
+
+        <div class="kpi-card rose" id="kpi-rules-card">
+          <div class="kpi-header">
+            <span>Alert Rules</span>
+            <span class="kpi-icon">🚨</span>
+          </div>
+          <div class="kpi-value" id="kpi-rules">--</div>
+          <div class="kpi-subtext" id="kpi-rules-sub">-- firing</div>
+        </div>
+      </div>
+
+      <!-- Realtime Chart Row -->
+      <div class="grid-2col">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title"><span>📈</span> Live CPU Usage History</div>
+            <span class="badge badge-info" id="chart-cpu-current">--%</span>
+          </div>
+          <div class="chart-box">
+            <canvas id="chart-cpu"></canvas>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title"><span>📊</span> Live Memory Usage History</div>
+            <span class="badge badge-info" id="chart-mem-current">--%</span>
+          </div>
+          <div class="chart-box">
+            <canvas id="chart-mem"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- System Summary & Alert Activity -->
+      <div class="grid-2col">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title"><span>🖥️</span> Host System Info</div>
+          </div>
+          <table class="data-table">
+            <tbody>
+              <tr><td class="mono">Hostname</td><td id="ov-hostname" class="mono font-bold">--</td></tr>
+              <tr><td class="mono">Operating System</td><td id="ov-os">--</td></tr>
+              <tr><td class="mono">Uptime</td><td id="ov-uptime" class="mono">--</td></tr>
+              <tr><td class="mono">CPU Topology</td><td id="ov-cpu-cores">--</td></tr>
+              <tr><td class="mono">Total Processes</td><td id="ov-procs" class="mono">--</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title"><span>🔔</span> Recent Alert Events</div>
+            <span class="badge badge-info" id="ov-alert-count">0 logged</span>
+          </div>
+          <div class="log-stream" id="ov-alert-logs">
+            <div class="log-item" style="color: var(--text-muted);">No active alert breaches recorded.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== TAB 2: SYSTEM METRICS ==================== -->
+    <section id="tab-metrics" class="tab-content">
+      <!-- Multi-core CPU Visualizer -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title"><span>🎛️</span> Per-Core CPU Utilization</div>
+          <span class="badge badge-info" id="metrics-core-count">-- cores</span>
+        </div>
+        <div class="core-grid" id="core-grid-container">
+          <!-- Dynamically populated -->
+        </div>
+      </div>
+
+      <!-- Memory & Disk Partition Row -->
+      <div class="grid-2col">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title"><span>🧠</span> Memory & Swap Breakdown</div>
+          </div>
+          <table class="data-table">
+            <tbody>
+              <tr><td>RAM Total</td><td id="m-ram-total" class="mono">-- GB</td></tr>
+              <tr><td>RAM Used</td><td id="m-ram-used" class="mono">-- GB</td></tr>
+              <tr><td>RAM Available</td><td id="m-ram-avail" class="mono">-- GB</td></tr>
+              <tr><td>Swap Total</td><td id="m-swap-total" class="mono">-- GB</td></tr>
+              <tr><td>Swap Used</td><td id="m-swap-used" class="mono">-- GB</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title"><span>💽</span> Disk Partitions</div>
+          </div>
+          <div class="table-responsive">
+            <table class="data-table" id="disk-partitions-table">
+              <thead>
+                <tr>
+                  <th>Mount</th>
+                  <th>Device</th>
+                  <th>Total</th>
+                  <th>Used</th>
+                  <th>Usage %</th>
+                </tr>
+              </thead>
+              <tbody id="disk-partitions-body">
+                <tr><td colspan="5">Scanning storage devices...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Network & Hardware Sensors -->
+      <div class="grid-2col">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title"><span>🌐</span> Network & Connections</div>
+          </div>
+          <table class="data-table">
+            <tbody>
+              <tr><td>Traffic Transmitted</td><td id="net-sent" class="mono">-- MiB</td></tr>
+              <tr><td>Traffic Received</td><td id="net-recv" class="mono">-- MiB</td></tr>
+              <tr><td>Packets Out / In</td><td id="net-packets" class="mono">-- / --</td></tr>
+              <tr><td>Active Sockets / Conns</td><td id="net-conns" class="mono">--</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title"><span>🌡️</span> Hardware Sensors & Thermal</div>
+          </div>
+          <div id="sensor-container">
+            <div style="color: var(--text-muted); font-size: 0.85rem;">Scanning thermal sensors...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Top Processes -->
+      <div class="grid-2col">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title"><span>🔥</span> Top Processes by CPU</div>
+          </div>
+          <table class="data-table">
+            <thead>
+              <tr><th>PID</th><th>Process Name</th><th>CPU %</th></tr>
+            </thead>
+            <tbody id="top-cpu-procs-body">
+              <tr><td colspan="3">Scanning processes...</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title"><span>💾</span> Top Processes by Memory</div>
+          </div>
+          <table class="data-table">
+            <thead>
+              <tr><th>PID</th><th>Process Name</th><th>Mem %</th></tr>
+            </thead>
+            <tbody id="top-mem-procs-body">
+              <tr><td colspan="3">Scanning processes...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== TAB 3: DOCKER ENGINE ==================== -->
+    <section id="tab-docker" class="tab-content">
+      <!-- Docker Status Banner -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <span>🐳</span> Docker Engine Overview
+          </div>
+          <div id="docker-daemon-badge" class="badge badge-online">Checking...</div>
+        </div>
+        <div class="kpi-grid" style="margin-bottom: 0;">
+          <div class="kpi-card blue">
+            <div class="kpi-header"><span>Running Containers</span></div>
+            <div class="kpi-value" id="docker-kpi-running">0</div>
+          </div>
+          <div class="kpi-card purple">
+            <div class="kpi-header"><span>Total Containers</span></div>
+            <div class="kpi-value" id="docker-kpi-total">0</div>
+          </div>
+          <div class="kpi-card green">
+            <div class="kpi-header"><span>Images Available</span></div>
+            <div class="kpi-value" id="docker-kpi-images">0</div>
+          </div>
+          <div class="kpi-card cyan">
+            <div class="kpi-header"><span>Server Version</span></div>
+            <div class="kpi-value" style="font-size: 1.2rem;" id="docker-kpi-version">--</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Containers Table (Portainer Style) -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title"><span>📦</span> Containers</div>
+          <input type="text" id="docker-filter-input" class="search-input" placeholder="Search containers...">
+        </div>
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>State</th>
+                <th>Name</th>
+                <th>Image</th>
+                <th>Container ID</th>
+                <th>Status</th>
+                <th>Ports</th>
+              </tr>
+            </thead>
+            <tbody id="docker-containers-body">
+              <tr><td colspan="6" style="text-align: center; color: var(--text-muted); padding: 2rem;">Loading Docker containers...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Docker Images Table -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title"><span>🖼️</span> Docker Images</div>
+        </div>
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Repository</th>
+                <th>Tag</th>
+                <th>Image ID</th>
+                <th>Size</th>
+                <th>Created</th>
+              </tr>
+            </thead>
+            <tbody id="docker-images-body">
+              <tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">Loading images...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== TAB 4: EC2 & REMOTE NODES ==================== -->
+    <section id="tab-nodes" class="tab-content">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title"><span>☁️</span> Connected Remote EC2 Telemetry Fleet</div>
+          <div class="badge badge-info" id="nodes-summary-badge">0 Nodes Reporting</div>
+        </div>
+        <p style="color: var(--text-secondary); font-size: 0.875rem; margin-bottom: 1rem;">
+          Remote instances push live telemetry via the HTTP receiver. Nodes automatically detect EC2 instance metadata (IMDSv2) including instance ID, AZ, public/private IP, and instance type.
+        </p>
+        <div class="cmd-block">
+          <span>Run agent on remote node: <code style="color: var(--cyan);">nano-agent --receiver-url http://&lt;RECEIVER_IP&gt;:8080/metrics</code></span>
+          <button class="copy-btn" onclick="navigator.clipboard.writeText('nano-agent --receiver-url http://localhost:8080/metrics')">Copy</button>
+        </div>
+      </div>
+
+      <!-- Fleet Grid -->
+      <div class="nodes-grid" id="nodes-cards-container">
+        <div class="panel" style="grid-column: 1 / -1; text-align: center; color: var(--text-muted); padding: 3rem;">
+          No remote EC2 instances reporting yet.<br>Start an agent or test with simulated metrics to view remote telemetry.
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== TAB 5: ALERT RULES ==================== -->
+    <section id="tab-rules" class="tab-content">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title"><span>🚨</span> Configured Alert Rules & Live Thresholds</div>
+          <span class="badge badge-info" id="rules-status-badge">0 Rules</span>
+        </div>
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Rule Name</th>
+                <th>Metric</th>
+                <th>Condition</th>
+                <th>Threshold</th>
+                <th>Action</th>
+                <th>Current Value</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="rules-table-body">
+              <tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 2rem;">No active alert rules configured.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Real-time Alert Log History -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title"><span>📜</span> Triggered Alert History Log</div>
+        </div>
+        <div class="log-stream" id="rules-alert-logs">
+          <div class="log-item" style="color: var(--text-muted);">No alert triggers recorded yet.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== TAB 6: TUI EXECUTION GUIDE ==================== -->
+    <section id="tab-tui" class="tab-content">
+      <div class="tui-terminal-banner">
+        <div class="terminal-header">
+          <div class="dot dot-red"></div>
+          <div class="dot dot-yellow"></div>
+          <div class="dot dot-green"></div>
+          <div class="terminal-title">nano-dsl :: TUI Execution Architecture</div>
+        </div>
+        <div class="terminal-body">
+          <p style="color: var(--cyan); margin-bottom: 0.5rem; font-weight: 600;">
+            🔒 Security Notice & Execution Boundary:
+          </p>
+          <p style="color: var(--text-secondary); margin-bottom: 1rem;">
+            By design, all DSL commands, rules, and mutating actions are <strong>strictly executed inside the Terminal User Interface (TUI)</strong>. This web dashboard serves as a high-performance, real-time observability and telemetry console (Portainer/Grafana style) to monitor your local system, containers, and EC2 fleet safely without exposing remote command execution endpoints.
+          </p>
+
+          <h4 style="color: var(--text-primary); margin: 1.25rem 0 0.5rem 0;">💻 Launching the TUI Terminal Console:</h4>
+          <div class="cmd-block">
+            <span>nano-dsl</span>
+            <button class="copy-btn" onclick="navigator.clipboard.writeText('nano-dsl')">Copy</button>
+          </div>
+
+          <h4 style="color: var(--text-primary); margin: 1.25rem 0 0.5rem 0;">⚡ Sample DSL Commands to try in the TUI:</h4>
+          <div class="cmd-block">
+            <span>cpu.util</span>
+            <button class="copy-btn" onclick="navigator.clipboard.writeText('cpu.util')">Copy</button>
+          </div>
+          <div class="cmd-block">
+            <span>docker.ps</span>
+            <button class="copy-btn" onclick="navigator.clipboard.writeText('docker.ps')">Copy</button>
+          </div>
+          <div class="cmd-block">
+            <span>ec2.list</span>
+            <button class="copy-btn" onclick="navigator.clipboard.writeText('ec2.list')">Copy</button>
+          </div>
+          <div class="cmd-block">
+            <span>high_cpu: alert cpu.util &gt; 80 -&gt; log</span>
+            <button class="copy-btn" onclick="navigator.clipboard.writeText('high_cpu: alert cpu.util > 80 -> log')">Copy</button>
+          </div>
+          <div class="cmd-block">
+            <span>slack_mem: alert mem.util &gt; 90 -&gt; slack</span>
+            <button class="copy-btn" onclick="navigator.clipboard.writeText('slack_mem: alert mem.util > 90 -> slack')">Copy</button>
+          </div>
+          <div class="cmd-block">
+            <span>stop rule high_cpu</span>
+            <button class="copy-btn" onclick="navigator.clipboard.writeText('stop rule high_cpu')">Copy</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Dashboard JavaScript Application -->
+  <script src="/dashboard.js"></script>
+</body>
+</html>

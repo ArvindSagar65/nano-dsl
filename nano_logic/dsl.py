@@ -36,14 +36,14 @@ ALERT: "alert"i
 ARROW: "->"
 RULE_KW.2: "rule"
 RULE_NAME: /[a-zA-Z_][a-zA-Z0-9_-]*/
-METRIC_NAME: /[a-zA-Z_]+\.[a-zA-Z_]+/
+METRIC_NAME: /[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)+/
 OPERATOR: ">" | "<" | "==" | ">=" | "<="
 ACTION: /[a-zA-Z_]+/
 
 # ── Commands organized by namespace ──
 ?command: cpu_cmd | mem_cmd | disk_cmd | gpu_cmd | proc_cmd
         | net_cmd | sys_cmd | sensor_cmd | docker_cmd | service_cmd
-        | utility_cmd
+        | ec2_cmd | utility_cmd
 
 # Using proven three-token "cpu" "." "metric" pattern throughout
 cpu_cmd: "cpu" "." "util"    -> cpu_util
@@ -99,6 +99,14 @@ docker_cmd: "docker" "." "ps"         -> docker_ps
 
 service_cmd: "service" "." "list"          -> service_list
            | "service" "." "status" CMD    -> service_status
+
+ec2_cmd: "ec2" "." "list"             -> ec2_list
+       | "ec2" "." "metrics" CMD      -> ec2_metrics
+       | "ec2" "." "metrics"          -> ec2_metrics
+       | "ec2" "." "info" CMD         -> ec2_info
+       | "ec2" "." "info"             -> ec2_info
+       | "ec2" "." "server" CMD       -> ec2_server
+       | "ec2" "." "server"           -> ec2_server
 
 utility_cmd: "clear"   -> cmd_clear
            | "help"    -> cmd_help
@@ -627,6 +635,26 @@ class MetricsTransformer(Transformer):
             service += ".service"
         return _run_cmd(["systemctl", "status", service, "--no-pager", "--lines=10"])
 
+    # ── EC2 & Remote Nodes ──
+    def _ec2(self, key: str, children: list) -> str:
+        handler = _plugin_registry.get_command_handler(key)
+        if handler is not None:
+            clean_children = [str(c) for c in children if c is not None]
+            return handler(*clean_children)
+        return f"Plugin handler for '{key}' not found."
+
+    def ec2_list(self, _children: list) -> str:
+        return self._ec2("ec2.list", _children)
+
+    def ec2_metrics(self, children: list) -> str:
+        return self._ec2("ec2.metrics", children)
+
+    def ec2_info(self, children: list) -> str:
+        return self._ec2("ec2.info", children)
+
+    def ec2_server(self, children: list) -> str:
+        return self._ec2("ec2.server", children)
+
     # ── Utility ──
     def cmd_clear(self, _children: list) -> str:
         """Sentinel — the dashboard intercepts this."""
@@ -647,6 +675,7 @@ class MetricsTransformer(Transformer):
             "  Docker:     docker.ps, docker.stats, docker.info, docker.images,\n"
             "              docker.containers, docker.logs <name>, docker.networks, docker.volumes\n"
             "  Services:   service.list, service.status <name>\n"
+            "  EC2/Cloud:  ec2.list, ec2.metrics [id], ec2.info [id], ec2.server [start|stop]\n"
             "  Utility:    clear, help, rules, status, history, guide\n\n"
             "  Alerts:     <name>: alert <metric> <op> <val> -> <action>\n"
             "              stop [rule] <id_or_name>\n"

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import subprocess
 import sys
@@ -214,6 +215,15 @@ class SystemDashboardApp(App[None]):
         self.update_rules_panel()
         self.refresh_metrics()
         self.run_worker(self._metrics_loop(), name="metrics-loop", exclusive=True)
+
+        try:
+            from nano_logic.web import get_active_web_server
+
+            web_srv = get_active_web_server()
+            if web_srv and web_srv.is_running:
+                self._append_console(f"🌐 Web Dashboard active on http://localhost:{web_srv.port}")
+        except Exception:
+            pass
 
         for line in self.command_history:
             self._write_console_wrapped(line)
@@ -452,6 +462,31 @@ class SystemDashboardApp(App[None]):
 
 def main() -> None:
     """Run the Textual dashboard application."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="nano-dsl Terminal Dashboard")
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="Launch the web observability dashboard in background",
+    )
+    parser.add_argument(
+        "--web-port",
+        type=int,
+        default=int(os.environ.get("NANO_WEB_PORT", "5000")),
+        help="Port for the web observability dashboard (default: 5000)",
+    )
+    args, _ = parser.parse_known_args()
+
+    if args.web:
+        try:
+            from nano_logic.web import get_or_start_web_server
+
+            get_or_start_web_server(port=args.web_port)
+            logger.info("Web dashboard started on port %d", args.web_port)
+        except Exception:
+            logger.exception("Could not start background web dashboard")
+
     SystemDashboardApp().run()
 
 
