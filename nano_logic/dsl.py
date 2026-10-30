@@ -123,7 +123,9 @@ CMD: /[a-zA-Z0-9_.\-\/]+/
 %ignore WS
 """
 
+# LALR is the fastest Lark parser that still supports this grammar.
 parser = Lark(DSL_GRAMMAR, parser="lalr")
+_TRANSFORMER = None
 
 # ──────────────────────────────────────────────
 #  Helpers
@@ -131,6 +133,17 @@ parser = Lark(DSL_GRAMMAR, parser="lalr")
 
 def _format_gib(value_bytes: int) -> float:
     return value_bytes / (1024 ** 3)
+
+
+def _loadavg() -> tuple[float, float, float] | None:
+    """Return (1m, 5m, 15m) load averages, or None on platforms without them."""
+    getter = getattr(os, "getloadavg", None)
+    if getter is None:
+        return None
+    try:
+        return getter()
+    except OSError:
+        return None
 
 
 def _run_cmd(cmd: list[str], timeout: int = 5) -> str:
@@ -199,19 +212,21 @@ class MetricsTransformer(Transformer):
 
     # ── CPU ──
     def cpu_util(self, _children: list) -> str:
-        return f"CPU Usage: {psutil.cpu_percent(interval=0.5):.1f}%"
+        # Non-blocking sample (interval=None). Callers that need a blocking
+        # first reading should warm up cpu_percent once at process start.
+        return f"CPU Usage: {psutil.cpu_percent(interval=None):.1f}%"
 
     def cpu_load(self, _children: list) -> str:
-        try:
-            load_1, load_5, load_15 = os.getloadavg()
-            cpu_count = max(1, psutil.cpu_count() or 1)
-            return (
-                "CPU Load: "
-                f"1m={load_1:.2f}, 5m={load_5:.2f}, 15m={load_15:.2f} "
-                f"(norm1m={(load_1 / cpu_count) * 100:.1f}%)"
-            )
-        except OSError:
+        load = _loadavg()
+        if load is None:
             return "CPU Load: unavailable on this platform"
+        load_1, load_5, load_15 = load
+        cpu_count = max(1, psutil.cpu_count() or 1)
+        return (
+            "CPU Load: "
+            f"1m={load_1:.2f}, 5m={load_5:.2f}, 15m={load_15:.2f} "
+            f"(norm1m={(load_1 / cpu_count) * 100:.1f}%)"
+        )
 
     def cpu_cores(self, _children: list) -> str:
         physical = psutil.cpu_count(logical=False) or 1
@@ -230,17 +245,17 @@ class MetricsTransformer(Transformer):
 
     def cpu_avg(self, _children: list) -> str:
         """Normalised average CPU load over 1/5/15 minutes."""
-        try:
-            load_1, load_5, load_15 = os.getloadavg()
-            cores = psutil.cpu_count() or 1
-            return (
-                f"CPU Avg Load (normalised): "
-                f"1m={load_1/cores*100:.1f}%, "
-                f"5m={load_5/cores*100:.1f}%, "
-                f"15m={load_15/cores*100:.1f}%"
-            )
-        except OSError:
+        load = _loadavg()
+        if load is None:
             return "CPU Avg: unavailable on this platform"
+        load_1, load_5, load_15 = load
+        cores = psutil.cpu_count() or 1
+        return (
+            f"CPU Avg Load (normalised): "
+            f"1m={load_1/cores*100:.1f}%, "
+            f"5m={load_5/cores*100:.1f}%, "
+            f"15m={load_15/cores*100:.1f}%"
+        )
 
     # ── Memory ──
     def mem_util(self, _children: list) -> str:
@@ -280,9 +295,10 @@ class MetricsTransformer(Transformer):
     def mem_cached(self, _children: list) -> str:
         mem = psutil.virtual_memory()
         buffers_gib = _format_gib(getattr(mem, "buffers", 0))
+        cached_gib = _format_gib(getattr(mem, "cached", 0))
         return (
             "Memory Cached/Buffers: "
-            f"cached={_format_gib(mem.cached):.2f}GiB, "
+            f"cached={cached_gib:.2f}GiB, "
             f"buffers={buffers_gib:.2f}GiB"
         )
 
@@ -528,16 +544,16 @@ class MetricsTransformer(Transformer):
 
     def system_load(self, _children: list) -> str:
         """Quick system load overview."""
-        try:
-            load_1, load_5, load_15 = os.getloadavg()
-            cpu_pct = psutil.cpu_percent(interval=0.2)
-            mem_pct = psutil.virtual_memory().percent
-            return (
-                f"System Load: load={load_1:.2f}/{load_5:.2f}/{load_15:.2f} | "
-                f"CPU: {cpu_pct:.1f}% | RAM: {mem_pct:.1f}%"
-            )
-        except OSError:
+        load = _loadavg()
+        if load is None:
             return "System Load: unavailable on this platform"
+        load_1, load_5, load_15 = load
+        cpu_pct = psutil.cpu_percent(interval=None)
+        mem_pct = psutil.virtual_memory().percent
+        return (
+            f"System Load: load={load_1:.2f}/{load_5:.2f}/{load_15:.2f} | "
+            f"CPU: {cpu_pct:.1f}% | RAM: {mem_pct:.1f}%"
+        )
 
     # ── Sensors ──
     def sensor_temp(self, _children: list) -> str:
@@ -694,18 +710,23 @@ class MetricsTransformer(Transformer):
     def cmd_status(self, _children: list) -> str:
         """Quick system status overview."""
         try:
-            cpu = psutil.cpu_percent(interval=0.3)
+            cpu = psutil.cpu_percent(interval=None)
             mem = psutil.virtual_memory()
             disk = psutil.disk_usage("/")
             uptime_secs = int(time.time() - psutil.boot_time())
             days = uptime_secs // 86400
             hours = (uptime_secs % 86400) // 3600
-            load_1, load_5, load_15 = os.getloadavg()
+            load = _loadavg()
+            if load is None:
+                load_line = "unavailable"
+            else:
+                load_1, load_5, load_15 = load
+                load_line = f"{load_1:.2f} / {load_5:.2f} / {load_15:.2f}"
             return (
                 f"System Status Overview\n"
                 f"{'='*50}\n"
                 f"  Uptime:   {days}d {hours}h\n"
-                f"  Load:     {load_1:.2f} / {load_5:.2f} / {load_15:.2f}\n"
+                f"  Load:     {load_line}\n"
                 f"  CPU:      {cpu:.1f}%\n"
                 f"  RAM:      {mem.percent:.1f}% ({_format_gib(mem.used):.1f}/{_format_gib(mem.total):.1f} GiB)\n"
                 f"  Disk:     {disk.percent:.1f}% ({_format_gib(disk.used):.1f}/{_format_gib(disk.total):.1f} GiB)\n"
@@ -734,13 +755,21 @@ def parse_command(command_text: str):
     return parser.parse(command_text)
 
 
+def _transformer() -> MetricsTransformer:
+    """Reuse one transformer — it is stateless and construction is wasted work."""
+    global _TRANSFORMER
+    if _TRANSFORMER is None:
+        _TRANSFORMER = MetricsTransformer()
+    return _TRANSFORMER
+
+
 def execute_command(command_text: str) -> str | Rule | StopRule:
     """Parse and execute a DSL command.
 
     Returns a string for queries, or a Rule / StopRule for alert operations.
     """
     tree = parse_command(command_text)
-    result = MetricsTransformer().transform(tree)
+    result = _transformer().transform(tree)
     if isinstance(result, Tree):
         return ""
     return result

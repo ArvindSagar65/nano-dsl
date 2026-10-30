@@ -563,7 +563,7 @@ class TestDashboardAlertNotifications:
                     app._check_for_new_alerts()
                     assert not any("ALERT" in line for line in app.command_history)
 
-                    with open(log_path, "a") as f:
+                    with open(log_path, "a", encoding="utf-8") as f:
                         f.write("[00:00:05] \U0001f6a8 [ALERT] cpu.util reached 42.0 (Rule: > 1.0)\n")
 
                     rung = []
